@@ -1,0 +1,27 @@
+const { db } = require("../config/firebase/config.js");
+
+class ChatHistoryService {
+	static async getChatHistory({ userId }) {
+		try {
+			const chatHistoryRef = db.collection("chat-empresas").doc(userId);
+			const doc = await chatHistoryRef.get();
+
+			if (!doc.exists) {
+				console.warn(
+					`⚠️ No se encontró historial de chat para el usuario: ${userId}`
+				);
+				return [];
+			}
+
+			const data = doc.data();
+			return { data };
+		} catch (error) {
+			console.error("❌ Error al obtener el historial de chat:", error);
+			throw new Error("Error al obtener el historial de chat");
+		}
+	}
+}
+
+module.exports = {
+	ChatHistoryService,
+};

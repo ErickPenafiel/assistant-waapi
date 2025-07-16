@@ -1,0 +1,13 @@
+{
+  "name": "web-waapi",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@qdrant/js-client-rest": "^1.14.1",
+    "cohere-ai": "^7.17.1",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.4.0"
+  }
+}
