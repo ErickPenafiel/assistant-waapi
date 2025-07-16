@@ -1,5 +1,10 @@
 const admin = require("firebase-admin");
-const serviceAccount = require("./quiropractica-wemen-firebase-adminsdk-vz0gp-c71b4e6b1f.json");
+
+const serviceAccount = JSON.parse(
+	Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, "base64").toString(
+		"utf-8"
+	)
+);
 
 admin.initializeApp({
 	credential: admin.credential.cert(serviceAccount),

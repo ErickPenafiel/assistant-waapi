@@ -1,4 +1,5 @@
 const { AssistantService } = require("./src/services/assistant-service");
+require("dotenv").config();
 const express = require("express");
 const app = express();
 const port = 5500;
@@ -34,11 +35,11 @@ app.post("/webhooks/:security_token", async (req, res) => {
 			return res.sendStatus(400);
 		}
 
-		const securityTokenEnv = process.env[instanceId];
-		if (!securityTokenEnv) {
-			console.warn("Unauhtorized access", instanceId);
-			return res.sendStatus(401);
-		}
+		// const securityTokenEnv = process.env[instanceId];
+		// if (!securityTokenEnv) {
+		// 	console.warn("Unauhtorized access", instanceId);
+		// 	return res.sendStatus(401);
+		// }
 
 		// const expectedToken = securityTokenEnv.trim();
 		const expectedToken = securityTokens[instanceId];
