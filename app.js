@@ -4,10 +4,6 @@ const express = require("express");
 const app = express();
 const port = 5500;
 
-const securityTokens = {
-	41632: "Pm9z2ZENJ4u3eyjTNO3JNpuNMGSmIIP0",
-};
-
 app.use(express.json());
 
 app.post("/webhooks/:security_token", async (req, res) => {
@@ -16,20 +12,14 @@ app.post("/webhooks/:security_token", async (req, res) => {
 		const { instanceId, event, data } = req.body;
 
 		if (!instanceId || !event || !data) {
-			console.warn("❌ Error al conectar a la instancia:", req.body);
+			console.warn("❌ Petición inválida:", req.body);
 			return res.sendStatus(400);
 		}
 
-		// const securityTokenEnv = process.env[instanceId];
-		// if (!securityTokenEnv) {
-		// 	console.warn("Unauhtorized access", instanceId);
-		// 	return res.sendStatus(401);
-		// }
+		const envKey = `ST_${instanceId}`;
+		const expectedToken = process.env[envKey];
 
-		// const expectedToken = securityTokenEnv.trim();
-		const expectedToken = securityTokens[instanceId];
-
-		if (!expectedToken || expectedToken !== securityToken) {
+		if (!expectedToken || expectedToken.trim() !== securityToken) {
 			console.warn("❌ Token inválido para instancia:", instanceId);
 			return res.sendStatus(401);
 		}
@@ -51,11 +41,9 @@ app.post("/webhooks/:security_token", async (req, res) => {
 
 			console.log(`✅ Mensaje de ${phone}: "${text}" a las ${timestamp}`);
 		} else {
-			// Puedes manejar más eventos si quieres (qr, ready, etc.)
 			console.log(`⚠️ Evento no manejado: ${event}`);
 		}
 
-		// ✅ Todo fue bien
 		res.sendStatus(200);
 	} catch (error) {
 		console.error("❌ Error procesando el webhook:", error);
