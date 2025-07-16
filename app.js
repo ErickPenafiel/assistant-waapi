@@ -5,33 +5,18 @@ const app = express();
 const port = 5500;
 
 const securityTokens = {
-	41632: "Pm9z2ZENJ4u3eyjTNO3JNpuNMGSmIIP01234",
+	41632: "Pm9z2ZENJ4u3eyjTNO3JNpuNMGSmIIP0",
 };
 
 app.use(express.json());
 
-app.post("/", async (req, res) => {
-	const { phone, text } = req.body;
-
-	const { data } = await AssistantService.chatWithDocument({
-		phone,
-		text,
-	});
-
-	res.status(200).json({
-		message: "Peticion recibida correctamente",
-		data: data.response || [],
-	});
-});
-
 app.post("/webhooks/:security_token", async (req, res) => {
 	try {
-		console.log("REQ", req.params);
 		const securityToken = req.params.security_token;
 		const { instanceId, event, data } = req.body;
 
 		if (!instanceId || !event || !data) {
-			console.warn("❌ Petición inválida:", req.body);
+			console.warn("❌ Error al conectar a la instancia:", req.body);
 			return res.sendStatus(400);
 		}
 
