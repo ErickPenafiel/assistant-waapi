@@ -5,22 +5,16 @@ const { EmbeddingsService } = require("./embeddings-service.js");
 const { randomUUID } = require("crypto");
 
 class AssistantService {
-	static async chatWithDocument({ phone, text }) {
-		if (!phone || !text) {
-			return {
-				error: "Faltan parámetros: 'phone' y/o 'text'",
-			};
+	static async chatWithDocument({ chat }) {
+		if (!chat || !Array.isArray(chat) || chat.length === 0) {
+			return { error: "El chat debe ser un array no vacío" };
 		}
 
 		try {
-			const { data } = await ChatHistoryService.getChatHistory({
-				userId: phone,
-			});
+			const messages = chat;
 
 			const model = "command-a-03-2025";
 			const collection = "documentos";
-
-			const { chat: messages } = data;
 
 			try {
 				const lastUserMessage = [...messages]
@@ -91,9 +85,7 @@ class AssistantService {
 				const { message: responseMessage } = cohereResponse;
 
 				return {
-					data: {
-						response: responseMessage,
-					},
+					response: responseMessage,
 				};
 			} catch (error) {
 				console.error("Error en chat:", error);
