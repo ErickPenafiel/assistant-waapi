@@ -1,6 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const { AssistantService } = require("./src/services/assistant-service");
+const { ChatHistoryService } = require("./src/services/chat-history-service");
+const { FormatNumber } = require("./src/helpers/FormatNumber");
 const app = express();
 const port = 5500;
 
@@ -8,7 +10,6 @@ app.use(express.json());
 
 app.post("/", async (req, res) => {
 	try {
-		console.log("📨 Petición recibida:", req.body);
 		const { phone, text } = req.body;
 
 		if (!phone || !text) {
@@ -55,15 +56,37 @@ app.post("/webhooks/:security_token", async (req, res) => {
 			const message = data.message;
 
 			if (!message || !message.from || !message.body || !message.timestamp) {
-				// console.warn("⚠️ Mensaje malformado:", message);
 				return res.sendStatus(400);
 			}
 
-			const phone = message.from.replace("@c.us", "");
+			const phone = FormatNumber.formatBoliviaNumber(
+				message.from.replace("@c.us", "")
+			);
 			const text = message.body;
-			const timestamp = new Date(message.timestamp * 1000);
 
-			console.log(`✅ Mensaje de ${phone}: "${text}" a las ${timestamp}`);
+			const dataHistory = await ChatHistoryService.getChatHistory({
+				userId: phone,
+			});
+
+			if (dataHistory.error) {
+				console.error(
+					"❌ Error al obtener el historial de chat:",
+					dataHistory.error
+				);
+				return res.status(500).json({ error: dataHistory.error });
+			}
+
+			if (dataHistory.automaticSend) {
+				const response = await AssistantService.chatWithDocument({
+					phone,
+					text,
+				});
+
+				if (response.error) {
+					console.error("❌ Error en el servicio:", response.error);
+					return res.status(500).json({ error: response.error });
+				}
+			}
 		} else {
 			console.log(`⚠️ Evento no manejado: ${event}`);
 		}

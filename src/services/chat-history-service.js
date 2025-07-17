@@ -20,6 +20,32 @@ class ChatHistoryService {
 			throw new Error("Error al obtener el historial de chat");
 		}
 	}
+
+	static async updateChatHistory({ userId, data }) {
+		try {
+			const chatHistoryRef = db.collection("chat-empresas").doc(userId);
+			const doc = await chatHistoryRef.get();
+
+			if (!doc.exists) {
+				console.warn(
+					`⚠️ No se encontró historial de chat para el usuario: ${userId}, creando uno nuevo.`
+				);
+				await chatHistoryRef.set({ history: [] });
+			}
+
+			await chatHistoryRef.update({
+				...data,
+			});
+
+			console.log(
+				`✅ Historial de chat actualizado para el usuario: ${userId}`
+			);
+			return { success: true };
+		} catch (error) {
+			console.error("❌ Error al actualizar el historial de chat:", error);
+			return { error: "Error al actualizar el historial de chat" };
+		}
+	}
 }
 
 module.exports = {
