@@ -1,10 +1,35 @@
-const { AssistantService } = require("./src/services/assistant-service");
 require("dotenv").config();
 const express = require("express");
+const { AssistantService } = require("./src/services/assistant-service");
 const app = express();
 const port = 5500;
 
 app.use(express.json());
+
+app.post("/", async (req, res) => {
+	try {
+		console.log("📨 Petición recibida:", req.body);
+		const { phone, text } = req.body;
+
+		if (!phone || !text) {
+			console.warn("❌ Petición inválida:", req.body);
+			return res.sendStatus(400);
+		}
+
+		const response = await AssistantService.chatWithDocument({ phone, text });
+
+		if (response.error) {
+			console.error("❌ Error en el servicio:", response.error);
+			return res.status(500).json({ error: response.error });
+		}
+
+		console.log("✅ Respuesta generada:", response);
+		res.json(response);
+	} catch (error) {
+		console.error("❌ Error procesando la petición:", error);
+		res.sendStatus(500);
+	}
+});
 
 app.post("/webhooks/:security_token", async (req, res) => {
 	try {
@@ -25,13 +50,12 @@ app.post("/webhooks/:security_token", async (req, res) => {
 		}
 
 		console.log(`📨 Evento recibido: ${event} para instancia ${instanceId}`);
-		console.log("📝 Cuerpo completo:", JSON.stringify(req.body, null, 2));
 
 		if (event === "message") {
 			const message = data.message;
 
 			if (!message || !message.from || !message.body || !message.timestamp) {
-				console.warn("⚠️ Mensaje malformado:", message);
+				// console.warn("⚠️ Mensaje malformado:", message);
 				return res.sendStatus(400);
 			}
 
