@@ -4,10 +4,17 @@ const { AssistantService } = require("./src/services/assistant-service");
 const { ChatHistoryService } = require("./src/services/chat-history-service");
 const { FormatNumber } = require("./src/helpers/FormatNumber");
 const { MessageService } = require("./src/services/message-service");
+const { wasender } = require("./src/config/clients/wasenderapi-client");
 const app = express();
 const port = 5500;
+const bodyParser = require("body-parser");
+const {
+	MessageWasendService,
+} = require("./src/services/message-wasend-servide");
 
-app.use(express.json({ limit: "5mb" }));
+// app.use(express.json({ limit: "5mb" }));
+
+app.use("/webhook", bodyParser.raw({ type: "*/*" }));
 
 app.post("/webhooks/:security_token", async (req, res) => {
 	try {
@@ -109,6 +116,75 @@ app.post("/webhooks/:security_token", async (req, res) => {
 		res.sendStatus(200);
 	} catch (error) {
 		console.error("❌ Error procesando el webhook:", error);
+		res.sendStatus(500);
+	}
+});
+
+app.post("/webhook", async (req, res) => {
+	if (!process.env.WASENDER_WEBHOOK_SECRET) {
+		console.error("Webhook secret not configured.");
+		return res.status(500).send("Webhook secret not configured.");
+	}
+
+	const adapter = {
+		getHeader: (name) => req.header(name) || "",
+		getRawBody: () => req.body.toString("utf8"),
+	};
+
+	try {
+		const webhookEvent = await wasender.handleWebhookEvent(adapter);
+
+		console.log("📦 Webhook recibido:", webhookEvent.event);
+
+		switch (webhookEvent.event) {
+			case "messages.upsert":
+				const { key, message } = webhookEvent.data.messages;
+				const { fromMe, remoteJid } = key;
+
+				if (!message || !message.conversation) {
+					console.warn("⚠️ Mensaje no válido:", key.id);
+					return;
+				}
+
+				const text = message.conversation || "";
+				const phone = remoteJid.replace("@s.whatsapp.net", "");
+
+				if (fromMe) {
+					console.log("📩 Mensaje enviado por nosotros, ignorando:", key.id);
+					return res.sendStatus(200);
+				}
+
+				const formattedPhone = FormatNumber.formatBoliviaNumber(phone);
+
+				const newMessage = {
+					role: "user",
+					content: [{ type: "text", text: text.trim() }],
+				};
+
+				const { response } = await AssistantService.chatWithDocument({
+					chat: [newMessage],
+				});
+
+				console.log("🤖 Respuesta del asistente:", response);
+
+				const responseMessage = await MessageWasendService.sendMessage({
+					phone: formattedPhone,
+					message: response.content[0].text,
+				});
+
+				console.log(
+					`📞 Mensaje procesado y respuesta enviada a: ${formattedPhone}`
+				);
+
+				break;
+
+			default:
+				console.warn("⚠️ Evento no manejado:", webhookEvent.event);
+		}
+
+		res.sendStatus(200);
+	} catch (error) {
+		console.error("❌ Error genérico al procesar webhook:", error);
 		res.sendStatus(500);
 	}
 });

@@ -11,7 +11,7 @@ class FormatNumber {
 		}
 
 		if (/^\d{8}$/.test(number)) {
-			number = "591" + number;
+			number = "+591" + number;
 		}
 
 		return number;

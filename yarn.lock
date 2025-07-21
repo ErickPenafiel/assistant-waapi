@@ -1603,6 +1603,11 @@ depd@2.0.0, depd@^2.0.0:
   resolved "https://registry.yarnpkg.com/depd/-/depd-2.0.0.tgz#b696163cc757560d09cf22cc8fad1571b79e76df"
   integrity sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==
 
+dotenv@^16.4.5:
+  version "16.6.1"
+  resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
+  integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
+
 dotenv@^17.2.0:
   version "17.2.0"
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-17.2.0.tgz#e19678fdabcf86d4bfdb6764a758d7d44efbb6a2"
@@ -2668,6 +2673,13 @@ vary@^1.1.2:
   version "1.1.2"
   resolved "https://registry.yarnpkg.com/vary/-/vary-1.1.2.tgz#2299f02c6ded30d4a5961b0b9f74524a18f634fc"
   integrity sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==
+
+wasenderapi@^0.1.5:
+  version "0.1.5"
+  resolved "https://registry.yarnpkg.com/wasenderapi/-/wasenderapi-0.1.5.tgz#19e890c58959d059688698b87f4eb1072d1fb1c7"
+  integrity sha512-bxLyqrR3PWF7xNJ74+BYvjyjOmHCJggQNDJjsVlR7yVK/df84Ft08su5AvaoqnE+YYST7HgiHQVTMf8Of3vVdA==
+  dependencies:
+    dotenv "^16.4.5"
 
 webidl-conversions@^3.0.0:
   version "3.0.1"
