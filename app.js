@@ -141,12 +141,13 @@ app.post("/webhook", async (req, res) => {
 				const { key, message } = webhookEvent.data.messages;
 				const { fromMe, remoteJid } = key;
 
-				if (!message || !message.conversation) {
+				if (!message) {
 					console.warn("⚠️ Mensaje no válido:", key.id);
 					return;
 				}
 
-				const text = message.conversation || "";
+				const text =
+					message.conversation || message.extendedTextMessage.text || "";
 				const phone = remoteJid.replace("@s.whatsapp.net", "");
 
 				if (fromMe) {
@@ -171,6 +172,60 @@ app.post("/webhook", async (req, res) => {
 					phone: formattedPhone,
 					message: response.content[0].text,
 				});
+
+				// console.log(`📞 Procesando mensaje de: ${phone} con texto: "${text}"`);
+
+				// const { data: dataHistory } = await ChatHistoryService.getChatHistory({
+				// 	userId: formattedPhone,
+				// });
+
+				// if (dataHistory.error) {
+				// 	console.error(
+				// 		"❌ Error al obtener el historial de chat:",
+				// 		dataHistory.error
+				// 	);
+				// 	return res.status(500).json({ error: dataHistory.error });
+				// }
+
+				// const { automaticSend, chat } = dataHistory;
+
+				// await ChatHistoryService.updateChatHistory({
+				// 	userId: phone,
+				// 	data: { chat: [...dataHistory.chat, newMessage] },
+				// });
+
+				// if (automaticSend) {
+				// 	const { response } = await AssistantService.chatWithDocument({
+				// 		chat: [...chat, newMessage],
+				// 	});
+
+				// 	const responseMessage = await MessageService.sendMessage({
+				// 		phone: phone + "@c.us",
+				// 		message: response.content[0].text,
+				// 		instanceId: instanceId,
+				// 	});
+
+				// 	const chatHistoryUpdate = [
+				// 		...chat,
+				// 		newMessage,
+				// 		{
+				// 			role: response.role || "assistant",
+				// 			content: response.content || [
+				// 				{ type: "text", text: "Sin respuesta" },
+				// 			],
+				// 		},
+				// 	];
+
+				// 	const updateResponse = await ChatHistoryService.updateChatHistory({
+				// 		userId: phone,
+				// 		data: { chat: chatHistoryUpdate },
+				// 	});
+
+				// 	if (response.error) {
+				// 		console.error("❌ Error en el servicio:", response.error);
+				// 		return res.status(500).json({ error: response.error });
+				// 	}
+				// }
 
 				console.log(
 					`📞 Mensaje procesado y respuesta enviada a: ${formattedPhone}`
