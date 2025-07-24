@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
 const express = require("express");
 const { AssistantService } = require("./src/services/assistant-service");
 const { ChatHistoryService } = require("./src/services/chat-history-service");

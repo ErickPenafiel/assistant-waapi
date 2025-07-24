@@ -1,4 +1,5 @@
-require("dotenv").config();
+require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
+
 const { QdrantClient } = require("@qdrant/js-client-rest");
 
 const qdrantClient = new QdrantClient({
