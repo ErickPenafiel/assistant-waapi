@@ -6,7 +6,7 @@ const { FormatNumber } = require("./src/helpers/FormatNumber");
 const { MessageService } = require("./src/services/message-service");
 const { wasender } = require("./src/config/clients/wasenderapi-client");
 const app = express();
-const port = 5500;
+const port = process.env.PORT || 5500;
 const bodyParser = require("body-parser");
 const {
 	MessageWasendService,
