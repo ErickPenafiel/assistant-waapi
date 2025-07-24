@@ -98,6 +98,27 @@ class AssistantService {
 			throw new Error("Error al obtener el historial de chat");
 		}
 	}
+
+	static async getStatusAssistant({ name = "assistant-1" }) {
+		try {
+			const statusRef = collection("assistants").doc(name);
+			const statusDoc = await statusRef.get();
+
+			if (!statusDoc.exists) {
+				console.error(`❌ Asistente ${name} no encontrado`);
+				return { error: `Asistente ${name} no encontrado` };
+			}
+
+			const statusData = statusDoc.data();
+			return {
+				name: name,
+				status: statusData,
+			};
+		} catch (error) {
+			console.error("❌ Error al obtener el estado del asistente:", error);
+			throw new Error("Error al obtener el estado del asistente");
+		}
+	}
 }
 
 module.exports = {

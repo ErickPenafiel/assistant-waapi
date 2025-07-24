@@ -12,8 +12,6 @@ const {
 	MessageWasendService,
 } = require("./src/services/message-wasend-servide");
 
-// app.use(express.json({ limit: "5mb" }));
-
 app.use("/webhook", bodyParser.raw({ type: "*/*" }));
 
 app.post("/webhooks/:security_token", async (req, res) => {
@@ -162,70 +160,26 @@ app.post("/webhook", async (req, res) => {
 					content: [{ type: "text", text: text.trim() }],
 				};
 
+				const { name, status } = await AssistantService.getStatusAssistant({
+					name: process.env.NAME_ASSISTANT,
+				});
+
+				if (status.automaticSend === false) {
+					console.log(
+						"⚠️ Envío automático desactivado para el asistente:",
+						name
+					);
+					return res.sendStatus(200);
+				}
+
 				const { response } = await AssistantService.chatWithDocument({
 					chat: [newMessage],
 				});
-
-				console.log("🤖 Respuesta del asistente:", response);
 
 				const responseMessage = await MessageWasendService.sendMessage({
 					phone: formattedPhone,
 					message: response.content[0].text,
 				});
-
-				// console.log(`📞 Procesando mensaje de: ${phone} con texto: "${text}"`);
-
-				// const { data: dataHistory } = await ChatHistoryService.getChatHistory({
-				// 	userId: formattedPhone,
-				// });
-
-				// if (dataHistory.error) {
-				// 	console.error(
-				// 		"❌ Error al obtener el historial de chat:",
-				// 		dataHistory.error
-				// 	);
-				// 	return res.status(500).json({ error: dataHistory.error });
-				// }
-
-				// const { automaticSend, chat } = dataHistory;
-
-				// await ChatHistoryService.updateChatHistory({
-				// 	userId: phone,
-				// 	data: { chat: [...dataHistory.chat, newMessage] },
-				// });
-
-				// if (automaticSend) {
-				// 	const { response } = await AssistantService.chatWithDocument({
-				// 		chat: [...chat, newMessage],
-				// 	});
-
-				// 	const responseMessage = await MessageService.sendMessage({
-				// 		phone: phone + "@c.us",
-				// 		message: response.content[0].text,
-				// 		instanceId: instanceId,
-				// 	});
-
-				// 	const chatHistoryUpdate = [
-				// 		...chat,
-				// 		newMessage,
-				// 		{
-				// 			role: response.role || "assistant",
-				// 			content: response.content || [
-				// 				{ type: "text", text: "Sin respuesta" },
-				// 			],
-				// 		},
-				// 	];
-
-				// 	const updateResponse = await ChatHistoryService.updateChatHistory({
-				// 		userId: phone,
-				// 		data: { chat: chatHistoryUpdate },
-				// 	});
-
-				// 	if (response.error) {
-				// 		console.error("❌ Error en el servicio:", response.error);
-				// 		return res.status(500).json({ error: response.error });
-				// 	}
-				// }
 
 				console.log(
 					`📞 Mensaje procesado y respuesta enviada a: ${formattedPhone}`
