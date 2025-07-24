@@ -3,6 +3,7 @@ const { qdrantClient } = require("../config/clients/qdrant-client.js");
 const { ChatHistoryService } = require("./chat-history-service.js");
 const { EmbeddingsService } = require("./embeddings-service.js");
 const { randomUUID } = require("crypto");
+const { db } = require("../config/firebase/config.js");
 
 class AssistantService {
 	static async chatWithDocument({ chat }) {
@@ -101,7 +102,7 @@ class AssistantService {
 
 	static async getStatusAssistant({ name = "assistant-1" }) {
 		try {
-			const statusRef = collection("assistants").doc(name);
+			const statusRef = db.collection("config").doc(name);
 			const statusDoc = await statusRef.get();
 
 			if (!statusDoc.exists) {
@@ -110,8 +111,9 @@ class AssistantService {
 			}
 
 			const statusData = statusDoc.data();
+
 			return {
-				name: name,
+				name,
 				status: statusData,
 			};
 		} catch (error) {
