@@ -1,3 +1,4 @@
+require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
 const { cohereClient } = require("../config/clients/cohere-client.js");
 const { qdrantClient } = require("../config/clients/qdrant-client.js");
 const { ChatHistoryService } = require("./chat-history-service.js");
@@ -15,7 +16,7 @@ class AssistantService {
 			const messages = chat;
 
 			const model = "command-a-03-2025";
-			const collection = "documentos";
+			const collection = process.env.COLLECTION_QT || "documentos";
 
 			try {
 				const lastUserMessage = [...messages]
