@@ -1,9 +1,12 @@
+require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
 const { db } = require("../config/firebase/config.js");
 
 class ChatHistoryService {
 	static async getChatHistory({ userId }) {
 		try {
-			const chatHistoryRef = db.collection("chat-empresas").doc(userId);
+			const chatHistoryRef = db
+				.collection(process.env.COLLECTION_NAME)
+				.doc(userId);
 			const doc = await chatHistoryRef.get();
 
 			if (!doc.exists) {
@@ -23,7 +26,9 @@ class ChatHistoryService {
 
 	static async updateChatHistory({ userId, data }) {
 		try {
-			const chatHistoryRef = db.collection("chat-empresas").doc(userId);
+			const chatHistoryRef = db
+				.collection(process.env.COLLECTION_NAME)
+				.doc(userId);
 			const doc = await chatHistoryRef.get();
 
 			if (!doc.exists) {

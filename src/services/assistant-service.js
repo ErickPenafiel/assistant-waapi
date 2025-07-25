@@ -77,11 +77,18 @@ class AssistantService {
 							: m.content?.text || "",
 				}));
 
-				const cohereResponse = await cohereClient.chat({
-					model,
-					documents: contextDocuments,
-					messages: normalizedMessages,
-				});
+				let cohereResponse;
+
+				try {
+					cohereResponse = await cohereClient.chat({
+						model,
+						documents: contextDocuments,
+						messages: normalizedMessages,
+					});
+				} catch (error) {
+					console.error("Error en la llamada a Cohere:", error);
+					return { error: "Error al procesar el chat con Cohere" };
+				}
 
 				const { message: responseMessage } = cohereResponse;
 

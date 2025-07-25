@@ -4,7 +4,7 @@ class MessageWasendService {
 	static async sendMessage({ phone, message }) {
 		try {
 			const response = await wasender.sendText({
-				to: phone,
+				to: `+${phone}`,
 				text: message,
 			});
 			return response;

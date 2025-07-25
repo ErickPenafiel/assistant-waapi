@@ -160,7 +160,26 @@ app.post("/webhook", async (req, res) => {
 					content: [{ type: "text", text: text.trim() }],
 				};
 
-				const { name, status } = await AssistantService.getStatusAssistant({
+				const { data: dataHistory } = await ChatHistoryService.getChatHistory({
+					userId: formattedPhone,
+				});
+
+				if (dataHistory.error) {
+					console.error(
+						"❌ Error al obtener el historial de chat:",
+						dataHistory.error
+					);
+					return res.status(500).json({ error: dataHistory.error });
+				}
+
+				await ChatHistoryService.updateChatHistory({
+					userId: formattedPhone,
+					data: { chat: [...dataHistory.chat, newMessage] },
+				});
+
+				const { automaticSend, chat } = dataHistory;
+
+				const { status } = await AssistantService.getStatusAssistant({
 					name: process.env.NAME_ASSISTANT,
 				});
 
@@ -184,6 +203,22 @@ app.post("/webhook", async (req, res) => {
 				console.log(
 					`📞 Mensaje procesado y respuesta enviada a: ${formattedPhone}`
 				);
+
+				const chatHistoryUpdate = [
+					...chat,
+					newMessage,
+					{
+						role: response.role || "assistant",
+						content: response.content || [
+							{ type: "text", text: "Sin respuesta" },
+						],
+					},
+				];
+
+				const updateResponse = await ChatHistoryService.updateChatHistory({
+					userId: formattedPhone,
+					data: { chat: chatHistoryUpdate },
+				});
 
 				break;
 
