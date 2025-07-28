@@ -13,10 +13,13 @@ class ChatHistoryService {
 				console.warn(
 					`⚠️ No se encontró historial de chat para el usuario: ${userId}`
 				);
-				return {
+
+				const initialData = {
 					chat: [],
 					automaticSend: true,
 				};
+
+				await chatHistoryRef.set(initialData);
 			}
 
 			const data = doc.data();
