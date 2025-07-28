@@ -16,7 +16,6 @@ class ChatHistoryService {
 
 				const initialData = {
 					chat: [],
-					automaticSend: true,
 				};
 
 				await chatHistoryRef.set(initialData);

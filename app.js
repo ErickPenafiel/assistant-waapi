@@ -69,7 +69,13 @@ app.post("/webhook", async (req, res) => {
 					data: { chat: [...dataHistory.chat, newMessage] },
 				});
 
-				const { automaticSend, chat } = dataHistory;
+				const { chat } = dataHistory;
+
+				console.log(
+					`📥 Mensaje recibido de: ${formattedPhone}`,
+					newMessage,
+					chat
+				);
 
 				const { status } = await AssistantService.getStatusAssistant({
 					name: process.env.NAME_ASSISTANT,
