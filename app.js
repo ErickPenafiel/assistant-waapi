@@ -12,6 +12,10 @@ const {
 	MessageWasendService,
 } = require("./src/services/message-wasend-servide");
 
+app.get("/", (req, res) => {
+	res.send(`🚀 Webhook is running! ${process.env.NAME_ASSISTANT}`);
+});
+
 app.use("/webhook", bodyParser.raw({ type: "*/*" }));
 
 app.post("/webhooks/:security_token", async (req, res) => {
@@ -163,14 +167,6 @@ app.post("/webhook", async (req, res) => {
 				const { data: dataHistory } = await ChatHistoryService.getChatHistory({
 					userId: formattedPhone,
 				});
-
-				if (dataHistory.error) {
-					console.error(
-						"❌ Error al obtener el historial de chat:",
-						dataHistory.error
-					);
-					return res.status(500).json({ error: dataHistory.error });
-				}
 
 				await ChatHistoryService.updateChatHistory({
 					userId: formattedPhone,
