@@ -1,16 +1,16 @@
 require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
 const express = require("express");
+const bodyParser = require("body-parser");
+const app = express();
+const port = process.env.PORT || 5500;
+
 const { AssistantService } = require("./src/services/assistant-service");
 const { ChatHistoryService } = require("./src/services/chat-history-service");
 const { FormatNumber } = require("./src/helpers/FormatNumber");
-const { MessageService } = require("./src/services/message-service");
-const { wasender } = require("./src/config/clients/wasenderapi-client");
-const app = express();
-const port = process.env.PORT || 5500;
-const bodyParser = require("body-parser");
 const {
 	MessageWasendService,
 } = require("./src/services/message-wasend-servide");
+const { wasender } = require("./src/config/clients/wasenderapi-client");
 
 app.get("/", (req, res) => {
 	res.send(`🚀 Webhook is running! ${process.env.NAME_ASSISTANT}`);
@@ -41,19 +41,26 @@ app.post("/webhook", async (req, res) => {
 
 				if (!message) {
 					console.warn("⚠️ Mensaje no válido:", key.id);
-					return;
+					return res.sendStatus(200);
 				}
 
 				const text =
-					message.conversation || message.extendedTextMessage.text || "";
+					message.conversation ||
+					(message.extendedTextMessage?.text ?? "") ||
+					"";
+
+				if (!text.trim()) {
+					console.warn("⚠️ Texto vacío, se ignora el mensaje");
+					return res.sendStatus(200);
+				}
+
 				const phone = remoteJid.replace("@s.whatsapp.net", "");
+				const formattedPhone = FormatNumber.formatBoliviaNumber(phone);
 
 				if (fromMe) {
 					console.log("📩 Mensaje enviado por nosotros, ignorando:", key.id);
 					return res.sendStatus(200);
 				}
-
-				const formattedPhone = FormatNumber.formatBoliviaNumber(phone);
 
 				const newMessage = {
 					role: "user",
@@ -64,27 +71,29 @@ app.post("/webhook", async (req, res) => {
 					userId: formattedPhone,
 				});
 
+				const currentChat = Array.isArray(dataHistory?.chat)
+					? dataHistory.chat
+					: [];
+
 				await ChatHistoryService.updateChatHistory({
 					userId: formattedPhone,
-					data: { chat: [...dataHistory.chat, newMessage] },
+					data: { chat: [...currentChat, newMessage] },
 				});
-
-				const { chat } = dataHistory;
 
 				console.log(
 					`📥 Mensaje recibido de: ${formattedPhone}`,
 					newMessage,
-					chat
+					currentChat
 				);
 
 				const { status } = await AssistantService.getStatusAssistant({
 					name: process.env.NAME_ASSISTANT,
 				});
 
-				if (status.automaticSend === false) {
+				if (!status?.automaticSend) {
 					console.log(
 						"⚠️ Envío automático desactivado para el asistente:",
-						name
+						process.env.NAME_ASSISTANT
 					);
 					return res.sendStatus(200);
 				}
@@ -93,9 +102,14 @@ app.post("/webhook", async (req, res) => {
 					chat: [newMessage],
 				});
 
-				const responseMessage = await MessageWasendService.sendMessage({
+				if (!Array.isArray(response?.content)) {
+					console.warn("⚠️ La respuesta no tiene contenido válido:", response);
+					return res.sendStatus(200);
+				}
+
+				await MessageWasendService.sendMessage({
 					phone: formattedPhone,
-					message: response.content[0].text,
+					message: response.content[0]?.text || "Sin respuesta",
 				});
 
 				console.log(
@@ -103,17 +117,18 @@ app.post("/webhook", async (req, res) => {
 				);
 
 				const chatHistoryUpdate = [
-					...chat,
+					...currentChat,
 					newMessage,
 					{
 						role: response.role || "assistant",
-						content: response.content || [
-							{ type: "text", text: "Sin respuesta" },
-						],
+						content:
+							response.content.length > 0
+								? response.content
+								: [{ type: "text", text: "Sin respuesta" }],
 					},
 				];
 
-				const updateResponse = await ChatHistoryService.updateChatHistory({
+				await ChatHistoryService.updateChatHistory({
 					userId: formattedPhone,
 					data: { chat: chatHistoryUpdate },
 				});
