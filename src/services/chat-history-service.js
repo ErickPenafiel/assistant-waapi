@@ -4,25 +4,19 @@ const { db } = require("../config/firebase/config.js");
 class ChatHistoryService {
 	static async getChatHistory({ userId }) {
 		try {
-			const chatHistoryRef = db
-				.collection(process.env.COLLECTION_NAME)
-				.doc(userId);
-			const doc = await chatHistoryRef.get();
+			const chatHistoryRef = db.collection(COLLECTION).doc(userId);
+			const snap = await chatHistoryRef.get();
 
-			if (!doc.exists) {
-				console.warn(
-					`⚠️ No se encontró historial de chat para el usuario: ${userId}`
-				);
-
+			if (!snap.exists) {
 				const initialData = {
+					archivedAt: null,
 					chat: [],
 				};
-
 				await chatHistoryRef.set(initialData);
+				return { data: initialData };
 			}
 
-			const data = doc.data();
-			return { data };
+			return { data: snap.data() };
 		} catch (error) {
 			console.error("❌ Error al obtener el historial de chat:", error);
 			throw new Error("Error al obtener el historial de chat");
@@ -31,21 +25,17 @@ class ChatHistoryService {
 
 	static async updateChatHistory({ userId, data }) {
 		try {
-			const chatHistoryRef = db
-				.collection(process.env.COLLECTION_NAME)
-				.doc(userId);
-			const doc = await chatHistoryRef.get();
+			const chatHistoryRef = db.collection(COLLECTION).doc(userId);
+			const snap = await chatHistoryRef.get();
 
-			if (!doc.exists) {
-				console.warn(
-					`⚠️ No se encontró historial de chat para el usuario: ${userId}, creando uno nuevo.`
-				);
-				await chatHistoryRef.set({ history: [] });
+			if (!snap.exists) {
+				await chatHistoryRef.set({
+					archivedAt: null,
+					chat: [],
+				});
 			}
 
-			await chatHistoryRef.update({
-				...data,
-			});
+			await chatHistoryRef.update({ ...data });
 
 			console.log(
 				`✅ Historial de chat actualizado para el usuario: ${userId}`
