@@ -5,7 +5,9 @@ const { db } = require("../config/firebase/config.js");
 class ChatHistoryService {
 	static async getChatHistory({ userId }) {
 		try {
-			const chatHistoryRef = db.collection(COLLECTION).doc(userId);
+			const chatHistoryRef = db
+				.collection(process.env.COLLECTION_NAME)
+				.doc(userId);
 			const snap = await chatHistoryRef.get();
 
 			if (!snap.exists) {
@@ -26,7 +28,9 @@ class ChatHistoryService {
 
 	static async updateChatHistory({ userId, data }) {
 		try {
-			const chatHistoryRef = db.collection(COLLECTION).doc(userId);
+			const chatHistoryRef = db
+				.collection(process.env.COLLECTION_NAME)
+				.doc(userId);
 			const snap = await chatHistoryRef.get();
 
 			if (!snap.exists) {
