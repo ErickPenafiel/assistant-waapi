@@ -1,4 +1,5 @@
 require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
+const { Timestamp } = require("firebase-admin/firestore");
 const { db } = require("../config/firebase/config.js");
 
 class ChatHistoryService {
@@ -35,7 +36,7 @@ class ChatHistoryService {
 				});
 			}
 
-			await chatHistoryRef.update({ ...data });
+			await chatHistoryRef.update({ ...data, lastUpdate: Timestamp.now() });
 
 			console.log(
 				`✅ Historial de chat actualizado para el usuario: ${userId}`
