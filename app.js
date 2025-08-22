@@ -98,13 +98,17 @@ app.post("/webhook", async (req, res) => {
 					return res.sendStatus(200);
 				}
 
-				const { config } = await AssistantService.getConfigAssistant({});
+				const { config } = await AssistantService.getConfigAssistant({
+					name: process.env.NAME_ASSISTANT,
+				});
 
-				const systemPrompt = data?.prompt || "";
+				console.log({ config });
+
+				const systemPrompt = config?.prompt || "";
 
 				const promptSystem = {
 					role: "user",
-					content: systemPrompt,
+					content: [{ type: "text", text: systemPrompt }],
 				};
 
 				console.log({

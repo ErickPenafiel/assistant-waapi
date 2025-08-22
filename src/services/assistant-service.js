@@ -131,11 +131,9 @@ class AssistantService {
 		}
 	}
 
-	static async getConfigAssistant({}) {
+	static async getConfigAssistant({ name = "assistant-1" }) {
 		try {
-			const configRef = db
-				.collection("config")
-				.doc(process.env.NAME_ASSISTANT || "assistant-1");
+			const configRef = db.collection("config").doc(name);
 			const configDoc = await configRef.get();
 
 			if (!configDoc.exists) {
@@ -146,7 +144,6 @@ class AssistantService {
 			const configData = configDoc.data();
 
 			return {
-				name: "assistant-1",
 				config: configData,
 			};
 		} catch (error) {
