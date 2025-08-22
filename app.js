@@ -98,7 +98,7 @@ app.post("/webhook", async (req, res) => {
 					return res.sendStatus(200);
 				}
 
-				const data = await AssistantService.getConfigAssistant({});
+				const { config } = await AssistantService.getConfigAssistant({});
 
 				const systemPrompt = data?.prompt || "";
 
