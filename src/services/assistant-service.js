@@ -130,6 +130,33 @@ class AssistantService {
 			throw new Error("Error al obtener el estado del asistente");
 		}
 	}
+
+	static async getConfigAssistant({}) {
+		try {
+			const configRef = db
+				.collection("config")
+				.doc(process.env.NAME_ASSISTANT || "assistant-1");
+			const configDoc = await configRef.get();
+
+			if (!configDoc.exists) {
+				console.error(`❌ Configuración del asistente no encontrada`);
+				return { error: `Configuración del asistente no encontrada` };
+			}
+
+			const configData = configDoc.data();
+
+			return {
+				name: "assistant-1",
+				config: configData,
+			};
+		} catch (error) {
+			console.error(
+				"❌ Error al obtener la configuración del asistente:",
+				error
+			);
+			throw new Error("Error al obtener la configuración del asistente");
+		}
+	}
 }
 
 module.exports = {

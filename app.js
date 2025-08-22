@@ -98,8 +98,21 @@ app.post("/webhook", async (req, res) => {
 					return res.sendStatus(200);
 				}
 
+				const data = await AssistantService.getConfigAssistant({});
+
+				const systemPrompt = data?.prompt || "";
+
+				const promptSystem = {
+					role: "user",
+					content: systemPrompt,
+				};
+
+				console.log({
+					promptSystem,
+				});
+
 				const { response } = await AssistantService.chatWithDocument({
-					chat: [newMessage],
+					chat: promptSystem ? [promptSystem, newMessage] : [newMessage],
 				});
 
 				if (!Array.isArray(response?.content)) {
