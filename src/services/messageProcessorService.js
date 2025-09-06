@@ -1,9 +1,10 @@
 const { AssistantService } = require("./assistant-service");
 const { ChatHistoryService } = require("./chat-history-service");
 const { MessageWasendService } = require("./message-wasend-servide");
+const { AudioService } = require("./audio-service");
 
 class MessageProcessorService {
-  static async processMessages(formattedPhone) {
+  static async processMessages(formattedPhone, context = {}) {
     const { data: dataHistory } = await ChatHistoryService.getChatHistory({
       userId: formattedPhone,
     });
@@ -40,10 +41,49 @@ class MessageProcessorService {
       console.warn("Respuesta no válida");
       return;
     }
-    await MessageWasendService.sendMessage({
-      phone: formattedPhone,
-      message: response.content[0]?.text || "Sin respuesta",
-    });
+
+    const responseText = response.content[0]?.text || "Sin respuesta";
+
+    if (context.shouldRespondWithAudio) {
+      try {
+        const { wasender } = require("../config/clients/wasenderapi-client");
+        const audioBuffer = await AudioService.generateResponseAudio(
+          responseText
+        );
+        const tempAudioPath = await AudioService.saveTemporaryAudio(
+          audioBuffer,
+          "ogg"
+        );
+        const fs = require("fs");
+
+        await wasender.sendMedia({
+          to: `+${formattedPhone}`,
+          media: fs.createReadStream(tempAudioPath),
+          mediaType: "audio",
+        });
+
+        setTimeout(async () => {
+          try {
+            const fsPromises = require("fs").promises;
+            await fsPromises.unlink(tempAudioPath);
+          } catch (err) {
+            console.error("Error eliminando archivo temporal:", err);
+          }
+        }, 5 * 60 * 1000);
+      } catch (error) {
+        console.error(`Error enviando audio:`, error);
+        await MessageWasendService.sendMessage({
+          phone: formattedPhone,
+          message: responseText,
+        });
+      }
+    } else {
+      await MessageWasendService.sendMessage({
+        phone: formattedPhone,
+        message: responseText,
+      });
+    }
+
     const finalChatHistory = [
       ...currentChat,
       {
