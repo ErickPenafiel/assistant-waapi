@@ -1,6 +1,7 @@
 const { wasender } = require("../config/clients/wasenderapi-client");
 const { FormatNumber } = require("../helpers/FormatNumber");
 const { ChatHistoryService } = require("../services/chat-history-service");
+const { AudioService } = require("../services/audio-service");
 const MessageQueueService = require("../services/messagesQueueService");
 
 class WebhookController {
@@ -44,23 +45,51 @@ class WebhookController {
       return;
     }
 
-    const text =
-      message.conversation || message.extendedTextMessage?.text || "";
-    if (!text.trim()) {
-      console.warn("Texto vacío, ignorando mensaje");
-      return;
-    }
-
     const phone = remoteJid.replace("@s.whatsapp.net", "");
     const formattedPhone = FormatNumber.formatBoliviaNumber(phone);
 
     if (fromMe) {
       return;
     }
-    const newMessage = {
-      role: "user",
-      content: [{ type: "text", text: text.trim() }],
-    };
+
+    let newMessage;
+    let messageType = "text";
+
+    if (message.audioMessage) {
+      messageType = "audio";
+      try {
+        const transcribedText = await AudioService.processIncomingAudio({
+          audioMessage: message.audioMessage,
+          messageId: key.id,
+        });
+
+        if (!transcribedText) {
+          console.warn("No se pudo transcribir el audio");
+          return;
+        }
+
+        newMessage = {
+          role: "user",
+          content: [{ type: "text", text: transcribedText }],
+        };
+      } catch (error) {
+        console.error(`Error procesando audio de ${formattedPhone}:`, error);
+        return;
+      }
+    } else {
+      const text =
+        message.conversation || message.extendedTextMessage?.text || "";
+      if (!text.trim()) {
+        console.warn("Texto vacío, ignorando mensaje");
+        return;
+      }
+
+      newMessage = {
+        role: "user",
+        content: [{ type: "text", text: text.trim() }],
+      };
+    }
+
     try {
       const { data: dataHistory } = await ChatHistoryService.getChatHistory({
         userId: formattedPhone,
@@ -76,7 +105,9 @@ class WebhookController {
         data: { chat: updatedChat },
       });
 
-      MessageQueueService.addToQueue(formattedPhone, newMessage);
+      MessageQueueService.addToQueue(formattedPhone, newMessage, {
+        originalMessageType: messageType,
+      });
     } catch (error) {
       console.error(`Error procesando mensaje de ${formattedPhone}:`, error);
     }
