@@ -140,7 +140,7 @@ class AssistantService {
             model,
             documents: contextDocuments,
             messages: normalizedMessages,
-            maxTokens: 100,
+            maxTokens: 200,
           });
         } catch (error) {
           console.error("Error en la llamada a Cohere:", error);
