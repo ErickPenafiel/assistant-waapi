@@ -5,6 +5,42 @@ const { ChatHistoryService } = require("./chat-history-service.js");
 const { EmbeddingsService } = require("./embeddings-service.js");
 const { randomUUID } = require("crypto");
 const { db } = require("../config/firebase/config.js");
+function formatForWhatsApp(text) {
+  if (!text) return text;
+  console.log("Texto original:", text);
+  console.log(typeof text);
+  // Limpiar headers de markdown (##, ###, etc.)
+  text = text.replace(/^#{1,6}\s+(.+)$/gm, "$1");
+
+  // Convertir texto en negrita (**texto**) a mayúsculas o dejarlo sin formato
+  text = text.replace(/\*\*(.+?)\*\*/g, "$1"); // Quita los asteriscos
+  // O si prefieres mayúsculas: text = text.replace(/\*\*(.+?)\*\*/g, (match, p1) => p1.toUpperCase());
+
+  // Limpiar texto en cursiva (*texto*)
+  text = text.replace(/\*(.+?)\*/g, "$1");
+
+  // Limpiar listas con guiones o asteriscos al inicio
+  text = text.replace(/^[\s]*[-\*\+]\s+(.+)$/gm, "• $1");
+
+  // Limpiar listas numeradas
+  text = text.replace(/^[\s]*\d+\.\s+(.+)$/gm, "• $1");
+
+  // Limpiar bloques de código
+  text = text.replace(/```[\s\S]*?```/g, "");
+  text = text.replace(/`(.+?)`/g, "$1");
+
+  // Limpiar enlaces [texto](url)
+  text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+
+  // Limpiar líneas horizontales
+  text = text.replace(/^[-\*_]{3,}$/gm, "");
+
+  // Limpiar espacios extra y saltos de línea múltiples
+  text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.trim();
+
+  return text;
+}
 
 // Función para extraer texto de un mensaje
 function extractTextFromMessage(message) {
@@ -148,6 +184,11 @@ class AssistantService {
         }
 
         const { message: responseMessage } = cohereResponse;
+
+        const cleanedResponse = formatForWhatsApp(
+          responseMessage.content[0].text
+        );
+        responseMessage.content[0].text = cleanedResponse;
 
         return {
           response: responseMessage,
