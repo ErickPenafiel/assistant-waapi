@@ -104,6 +104,92 @@ function getUnrespondedUserMessages(messages) {
 }
 
 class AssistantService {
+  static async getActiveLocations() {
+    try {
+      const locationsRef = db.collection("locations");
+      const snapshot = await locationsRef.where("active", "==", true).get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+    } catch (error) {
+      console.error("Error getting active locations:", error);
+      return [];
+    }
+  }
+
+  // Función para calcular similitud entre textos
+  static calculateSimilarity(text1, text2) {
+    const words1 = text1.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const words2 = text2.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+
+    let matches = 0;
+    words1.forEach(word => {
+      if (words2.some(w => w.includes(word) || word.includes(w))) {
+        matches++;
+      }
+    });
+
+    return matches;
+  }
+
+  // Función para encontrar la mejor ubicación
+  static findBestLocation(locations, searchText) {
+    let bestMatch = null;
+    let bestScore = 0;
+
+    locations.forEach(location => {
+      const locationText = `${location.name} ${location.description} ${location.address}`;
+      const score = this.calculateSimilarity(searchText, locationText);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = location;
+      }
+    });
+
+    // Si no hay coincidencia, devolver la primera ubicación activa
+    return bestMatch || locations[0] || null;
+  }
+
+  static async getActivePromptImages() {
+    try {
+      const imagesRef = db.collection("prompt_images");
+      const snapshot = await imagesRef.where("active", "==", true).get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+    } catch (error) {
+      console.error("Error getting active prompt images:", error);
+      return [];
+    }
+  }
+
+  // Función para encontrar las mejores imágenes
+  static findBestImages(images, searchText, maxImages = 3) {
+    const scored = images.map(image => {
+      const imageText = `${image.name} ${image.description}`;
+      const score = this.calculateSimilarity(searchText, imageText);
+      return { ...image, score };
+    });
+
+    // Ordenar por score descendente
+    scored.sort((a, b) => b.score - a.score);
+
+    // Si hay al menos una con score > 0, devolver las mejores
+    // Si no, devolver las primeras imágenes disponibles
+    const withScore = scored.filter(img => img.score > 0);
+    if (withScore.length > 0) {
+      return withScore.slice(0, maxImages);
+    }
+
+    // Si no hay coincidencias, devolver las primeras disponibles
+    return scored.slice(0, maxImages);
+  }
+
   static async chatWithDocument({ chat }) {
     if (!chat || !Array.isArray(chat) || chat.length === 0) {
       return { error: "El chat debe ser un array no vacío" };
@@ -162,6 +248,44 @@ class AssistantService {
           console.error(`Error buscando en ${collection}:`, e.message);
         }
 
+        // Obtener ubicaciones e imágenes activas para el contexto
+        const activeLocations = await this.getActiveLocations();
+        const activeImages = await this.getActivePromptImages();
+
+        // Agregar ubicaciones al contexto si existen
+        if (activeLocations.length > 0) {
+          const locationsText = activeLocations
+            .map(
+              (loc) =>
+                `Ubicación: ${loc.name}\nDescripción: ${loc.description}\nDirección: ${loc.address}`
+            )
+            .join("\n\n");
+
+          contextDocuments.push({
+            id: randomUUID(),
+            data: {
+              text: `UBICACIONES DISPONIBLES:\n\n${locationsText}\n\nIMPORTANTE:\n1. Primera pregunta sobre ubicación: Lista SOLO los nombres de las ubicaciones disponibles y pregunta cuál le interesa\n2. Cuando elija una: Di "Te envío la ubicación de [nombre]" y NADA MÁS\n3. NUNCA incluyas coordenadas, direcciones completas, URLs o links en tu respuesta\n4. La ubicación se enviará automáticamente como ubicación de WhatsApp`,
+            },
+          });
+        }
+
+        // Agregar imágenes al contexto si existen
+        if (activeImages.length > 0) {
+          const imagesText = activeImages
+            .map(
+              (img) =>
+                `Imagen: ${img.name}\nDescripción: ${img.description}`
+            )
+            .join("\n\n");
+
+          contextDocuments.push({
+            id: randomUUID(),
+            data: {
+              text: `IMÁGENES DISPONIBLES:\n\n${imagesText}\n\nIMPORTANTE:\n1. Cuando el usuario pida ver imágenes: Di "Te muestro [nombre de la imagen]" o similar\n2. NUNCA incluyas URLs, links o rutas de imágenes en tu respuesta\n3. Las imágenes se enviarán automáticamente como imágenes de WhatsApp`,
+            },
+          });
+        }
+
         const normalizedMessages = messages.map((m) => ({
           role: m.role,
           content: extractTextFromMessage(m),
@@ -190,8 +314,95 @@ class AssistantService {
         );
         responseMessage.content[0].text = cleanedResponse;
 
+        // Detectar si la respuesta indica envío de ubicación o imagen
+        const responseText = cleanedResponse.toLowerCase();
+        const userText = getUnrespondedUserMessages(messages).toLowerCase();
+        const combinedText = `${userText} ${responseText}`;
+
+        let locationToSend = null;
+        let imagesToSend = [];
+        let shouldListLocations = false;
+
+        // Detectar si es una pregunta inicial sobre ubicaciones (listar opciones)
+        const initialLocationKeywords = [
+          "dónde", "donde", "ubicación", "ubicacion",
+          "dirección", "direccion", "quedan", "ubicados",
+          "ubicadas", "están", "sucursales"
+        ];
+
+        const isInitialLocationQuery = initialLocationKeywords.some(keyword =>
+          userText.includes(keyword)
+        ) && !responseText.includes("te envío") && !responseText.includes("te envio");
+
+        if (isInitialLocationQuery && activeLocations.length > 0) {
+          // Primera vez que pregunta: listar ubicaciones disponibles
+          shouldListLocations = true;
+
+          // Modificar la respuesta para listar ubicaciones
+          let locationsList = "Tenemos las siguientes ubicaciones:\n\n";
+          activeLocations.forEach((loc, index) => {
+            locationsList += `${index + 1}. ${loc.name}\n`;
+            if (loc.description) locationsList += `   ${loc.description}\n`;
+          });
+          locationsList += "\n¿De cuál ubicación te gustaría recibir la dirección?";
+
+          responseMessage.content[0].text = locationsList;
+        }
+        // Detectar si el usuario está eligiendo una ubicación específica
+        else if (activeLocations.length > 0) {
+          // Buscar si menciona alguna ubicación específica
+          for (const location of activeLocations) {
+            const locationName = location.name.toLowerCase();
+            if (
+              userText.includes(locationName) ||
+              responseText.includes(locationName) ||
+              responseText.includes("te envío") ||
+              responseText.includes("te envio")
+            ) {
+              locationToSend = location;
+              console.log(`Ubicación seleccionada para envío: ${location.name}`);
+              break;
+            }
+          }
+
+          // Si no encontró una específica, usar similitud
+          if (!locationToSend && (responseText.includes("te envío") || responseText.includes("te envio"))) {
+            locationToSend = this.findBestLocation(activeLocations, combinedText);
+            console.log(`Ubicación por similitud: ${locationToSend?.name || 'ninguna'}`);
+          }
+        }
+
+        // SIEMPRE buscar imágenes si hay palabras clave relacionadas
+        const imageKeywords = [
+          "imagen", "foto", "ver", "muestra", "mostrar",
+          "enseña", "enséña", "mira", "muestr", "fotograf"
+        ];
+
+        const hasImageKeyword = imageKeywords.some(keyword =>
+          combinedText.includes(keyword)
+        );
+
+        if (hasImageKeyword && activeImages.length > 0 && !locationToSend) {
+          // Solo buscar imágenes si NO se va a enviar ubicación
+          imagesToSend = this.findBestImages(activeImages, combinedText, 3);
+          console.log(`Imágenes seleccionadas: ${imagesToSend.length}`);
+        }
+
+        // Log de depuración
+        if (locationToSend) {
+          console.log("📍 Location a enviar:", {
+            name: locationToSend.name,
+            latitude: locationToSend.latitude,
+            longitude: locationToSend.longitude,
+            address: locationToSend.address
+          });
+        }
+
         return {
           response: responseMessage,
+          locationToSend,
+          imagesToSend,
+          shouldListLocations,
         };
       } catch (error) {
         console.error("Error en chat:", error);
