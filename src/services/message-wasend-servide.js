@@ -70,6 +70,48 @@ class MessageWasendService {
       throw error;
     }
   }
+
+  static async sendAudio({ phone, audioUrl, caption }) {
+    try {
+      const audioPayload = {
+        to: `+${phone}`,
+        audioUrl: audioUrl,
+        text: caption, // Caption es opcional
+      };
+
+      console.log("🎵 Enviando audio:", audioPayload);
+
+      const response = await wasender.sendAudio(audioPayload);
+      console.log(`✅ Audio enviado a ${phone}`);
+      return response;
+    } catch (error) {
+      console.error("❌ Error sending audio:", error);
+      console.error("Audio payload:", audioPayload);
+      console.error("Error details:", error);
+      throw error;
+    }
+  }
+
+  static async sendVideo({ phone, videoUrl, caption }) {
+    try {
+      const videoPayload = {
+        to: `+${phone}`,
+        videoUrl: videoUrl,
+        text: caption, // Caption es opcional
+      };
+
+      console.log("🎬 Enviando video:", videoPayload);
+
+      const response = await wasender.sendVideo(videoPayload);
+      console.log(`✅ Video enviado a ${phone}`);
+      return response;
+    } catch (error) {
+      console.error("❌ Error sending video:", error);
+      console.error("Video payload:", videoPayload);
+      console.error("Error details:", error);
+      throw error;
+    }
+  }
 }
 
 module.exports = {

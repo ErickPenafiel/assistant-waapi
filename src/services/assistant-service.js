@@ -163,31 +163,35 @@ class AssistantService {
         ...doc.data(),
       }));
     } catch (error) {
-      console.error("Error getting active prompt images:", error);
+      console.error("Error getting active prompt media:", error);
       return [];
     }
   }
 
-  // Función para encontrar las mejores imágenes
-  static findBestImages(images, searchText, maxImages = 3) {
-    const scored = images.map(image => {
-      const imageText = `${image.name} ${image.description}`;
-      const score = this.calculateSimilarity(searchText, imageText);
-      return { ...image, score };
+  // Función para encontrar el mejor contenido multimedia (imágenes, audios, videos)
+  static findBestMedia(mediaItems, searchText, maxItems = 3) {
+    const scored = mediaItems.map(item => {
+      const itemText = `${item.name} ${item.description}`;
+      const score = this.calculateSimilarity(searchText, itemText);
+      return { ...item, score };
     });
 
     // Ordenar por score descendente
     scored.sort((a, b) => b.score - a.score);
 
     // Si hay al menos una con score > 0, devolver las mejores
-    // Si no, devolver las primeras imágenes disponibles
-    const withScore = scored.filter(img => img.score > 0);
+    const withScore = scored.filter(item => item.score > 0);
     if (withScore.length > 0) {
-      return withScore.slice(0, maxImages);
+      return withScore.slice(0, maxItems);
     }
 
-    // Si no hay coincidencias, devolver las primeras disponibles
-    return scored.slice(0, maxImages);
+    // Si no hay coincidencias, no devolver nada
+    return [];
+  }
+
+  // Mantener compatibilidad
+  static findBestImages(images, searchText, maxImages = 3) {
+    return this.findBestMedia(images, searchText, maxImages);
   }
 
   static async chatWithDocument({ chat }) {
@@ -269,21 +273,53 @@ class AssistantService {
           });
         }
 
-        // Agregar imágenes al contexto si existen
+        // Agregar contenido multimedia (imágenes, audios, videos) al contexto si existen
         if (activeImages.length > 0) {
-          const imagesText = activeImages
-            .map(
-              (img) =>
-                `Imagen: ${img.name}\nDescripción: ${img.description}`
-            )
-            .join("\n\n");
+          const mediaByType = {
+            image: [],
+            audio: [],
+            video: []
+          };
 
-          contextDocuments.push({
-            id: randomUUID(),
-            data: {
-              text: `IMÁGENES DISPONIBLES:\n\n${imagesText}\n\nIMPORTANTE:\n1. Cuando el usuario pida ver imágenes: Di "Te muestro [nombre de la imagen]" o similar\n2. NUNCA incluyas URLs, links o rutas de imágenes en tu respuesta\n3. Las imágenes se enviarán automáticamente como imágenes de WhatsApp`,
-            },
+          // Agrupar por tipo
+          activeImages.forEach(item => {
+            const type = item.type || 'image';
+            if (mediaByType[type]) {
+              mediaByType[type].push(item);
+            }
           });
+
+          let mediaText = '';
+
+          if (mediaByType.image.length > 0) {
+            const imagesText = mediaByType.image
+              .map(img => `Imagen: ${img.name}\nDescripción: ${img.description}`)
+              .join("\n\n");
+            mediaText += `IMÁGENES DISPONIBLES:\n\n${imagesText}\n\n`;
+          }
+
+          if (mediaByType.audio.length > 0) {
+            const audiosText = mediaByType.audio
+              .map(audio => `Audio: ${audio.name}\nTranscripción: ${audio.description}`)
+              .join("\n\n");
+            mediaText += `AUDIOS DISPONIBLES:\n\n${audiosText}\n\n`;
+          }
+
+          if (mediaByType.video.length > 0) {
+            const videosText = mediaByType.video
+              .map(video => `Video: ${video.name}\nDescripción: ${video.description}`)
+              .join("\n\n");
+            mediaText += `VIDEOS DISPONIBLES:\n\n${videosText}\n\n`;
+          }
+
+          if (mediaText) {
+            contextDocuments.push({
+              id: randomUUID(),
+              data: {
+                text: `${mediaText}IMPORTANTE:\n1. Cuando el usuario pida ver imágenes, audios o videos: Di "Te muestro [nombre]" o "Te envío [nombre]"\n2. NUNCA incluyas URLs, links o rutas en tu respuesta\n3. El contenido multimedia se enviará automáticamente por WhatsApp`,
+              },
+            });
+          }
         }
 
         const normalizedMessages = messages.map((m) => ({
@@ -321,6 +357,8 @@ class AssistantService {
 
         let locationToSend = null;
         let imagesToSend = [];
+        let audiosToSend = [];
+        let videosToSend = [];
         let shouldListLocations = false;
 
         // Detectar si es una pregunta inicial sobre ubicaciones (listar opciones)
@@ -372,20 +410,59 @@ class AssistantService {
           }
         }
 
-        // SIEMPRE buscar imágenes si hay palabras clave relacionadas
+        // BUSCAR contenido multimedia SOLO basado en keywords del USUARIO y RESPUESTA
+        // (NO en el contenido de las descripciones/transcripciones)
         const imageKeywords = [
           "imagen", "foto", "ver", "muestra", "mostrar",
           "enseña", "enséña", "mira", "muestr", "fotograf"
         ];
 
+        const audioKeywords = [
+          "audio", "escuchar", "escucha", "oír", "oye",
+          "sonido", "grabación", "grabacion"
+        ];
+
+        const videoKeywords = [
+          "video", "vídeo", "clip", "grabación", "grabacion"
+        ];
+
+        // Verificar keywords SOLO en userText y responseText (no en combinedText)
         const hasImageKeyword = imageKeywords.some(keyword =>
-          combinedText.includes(keyword)
+          userText.includes(keyword) || responseText.includes(keyword)
         );
 
-        if (hasImageKeyword && activeImages.length > 0 && !locationToSend) {
-          // Solo buscar imágenes si NO se va a enviar ubicación
-          imagesToSend = this.findBestImages(activeImages, combinedText, 3);
-          console.log(`Imágenes seleccionadas: ${imagesToSend.length}`);
+        const hasAudioKeyword = audioKeywords.some(keyword =>
+          userText.includes(keyword) || responseText.includes(keyword)
+        );
+
+        const hasVideoKeyword = videoKeywords.some(keyword =>
+          userText.includes(keyword) || responseText.includes(keyword)
+        );
+
+        // Buscar multimedia INDEPENDIENTEMENTE de si hay ubicación
+        if (activeImages.length > 0) {
+          // Separar contenido por tipo
+          const images = activeImages.filter(item => (item.type || 'image') === 'image');
+          const audios = activeImages.filter(item => item.type === 'audio');
+          const videos = activeImages.filter(item => item.type === 'video');
+
+          // Buscar imágenes
+          if (hasImageKeyword && images.length > 0) {
+            imagesToSend = this.findBestMedia(images, userText, 3);
+            console.log(`Imágenes seleccionadas: ${imagesToSend.length}`);
+          }
+
+          // Buscar audios
+          if (hasAudioKeyword && audios.length > 0) {
+            audiosToSend = this.findBestMedia(audios, userText, 3);
+            console.log(`Audios seleccionados: ${audiosToSend.length}`);
+          }
+
+          // Buscar videos
+          if (hasVideoKeyword && videos.length > 0) {
+            videosToSend = this.findBestMedia(videos, userText, 3);
+            console.log(`Videos seleccionados: ${videosToSend.length}`);
+          }
         }
 
         // Log de depuración
@@ -402,6 +479,8 @@ class AssistantService {
           response: responseMessage,
           locationToSend,
           imagesToSend,
+          audiosToSend,
+          videosToSend,
           shouldListLocations,
         };
       } catch (error) {
