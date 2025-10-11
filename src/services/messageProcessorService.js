@@ -55,119 +55,114 @@ class MessageProcessorService {
       });
       console.log("Lista de ubicaciones enviada");
     }
-    // FLUJO 2: Si hay ubicación para enviar, primero texto, luego ubicación con delay
-    else if (locationToSend) {
-      // Enviar mensaje de texto primero solo si hay texto
-      if (responseText && responseText.trim() !== "") {
-        await MessageWasendService.sendMessage({
-          phone: formattedPhone,
-          message: responseText,
-        });
-        console.log("Mensaje de texto enviado");
-
-        // Delay de 2 segundos
-        await delay(2000);
-      }
-
-      // Enviar la ubicación
-      try {
-        await MessageWasendService.sendLocation({
-          phone: formattedPhone,
-          location: locationToSend,
-        });
-        console.log(`Ubicación enviada: ${locationToSend.name}`);
-      } catch (error) {
-        console.error("Error enviando ubicación:", error);
-      }
-    }
-    // FLUJO 3: Si hay contenido multimedia (imágenes, audios o videos)
-    else if ((imagesToSend && imagesToSend.length > 0) ||
+    // FLUJO 2: Si hay ubicación O multimedia para enviar
+    else if (locationToSend ||
+             (imagesToSend && imagesToSend.length > 0) ||
              (audiosToSend && audiosToSend.length > 0) ||
              (videosToSend && videosToSend.length > 0)) {
 
-      // Enviar mensaje de texto primero solo si hay texto
+      // 1. Enviar mensaje de texto primero
       if (responseText && responseText.trim() !== "") {
         await MessageWasendService.sendMessage({
           phone: formattedPhone,
           message: responseText,
         });
-        console.log("Mensaje de texto enviado");
-
-        // Delay antes de enviar multimedia
-        await delay(2000);
+        console.log("✅ Mensaje de texto enviado");
+        await delay(6000); // 6 segundos de delay
       }
 
-      // Calcular el total de elementos multimedia
+      // 2. Enviar ubicación si existe
+      if (locationToSend) {
+        try {
+          await MessageWasendService.sendLocation({
+            phone: formattedPhone,
+            location: locationToSend,
+          });
+          console.log(`✅ Ubicación enviada: ${locationToSend.name}`);
+          await delay(6000); // 6 segundos de delay después de ubicación
+        } catch (error) {
+          console.error("❌ Error enviando ubicación:", error);
+        }
+      }
+
+      // 3. Calcular y enviar multimedia (imágenes, videos, audios)
       const totalImages = imagesToSend?.length || 0;
-      const totalAudios = audiosToSend?.length || 0;
       const totalVideos = videosToSend?.length || 0;
-      const totalMedia = totalImages + totalAudios + totalVideos;
+      const totalAudios = audiosToSend?.length || 0;
+      const totalMedia = totalImages + totalVideos + totalAudios;
       let mediaCount = 0;
 
-      // Enviar imágenes con delay entre cada una
+      if (totalMedia > 0) {
+        console.log(`📦 Total multimedia a enviar: ${totalMedia} (${totalImages} imágenes, ${totalVideos} videos, ${totalAudios} audios)`);
+      }
+
+      // 4. Enviar imágenes con delay entre cada una
       if (imagesToSend && imagesToSend.length > 0) {
         for (const image of imagesToSend) {
           try {
             await MessageWasendService.sendImage({
               phone: formattedPhone,
               imageUrl: image.imageUrl,
-              caption: image.description,
+              caption: image.description || image.name,
             });
-            console.log(`Imagen enviada: ${image.name} (${++mediaCount}/${totalMedia})`);
+            mediaCount++;
+            console.log(`🖼️ Imagen enviada: ${image.name} (${mediaCount}/${totalMedia})`);
 
-            // Delay después de cada elemento, excepto el último
+            // Delay de 6 segundos entre cada elemento
             if (mediaCount < totalMedia) {
-              await delay(2000); // Aumentado a 2s para evitar rate limiting
+              await delay(6000);
             }
           } catch (error) {
-            console.error("Error enviando imagen:", error);
+            console.error("❌ Error enviando imagen:", error);
           }
         }
       }
 
-      // Enviar audios con delay entre cada uno
-      if (audiosToSend && audiosToSend.length > 0) {
-        for (const audio of audiosToSend) {
-          try {
-            await MessageWasendService.sendAudio({
-              phone: formattedPhone,
-              audioUrl: audio.imageUrl, // imageUrl contiene la URL del audio
-              caption: audio.name, // Enviar solo el nombre como caption
-            });
-            console.log(`Audio enviado: ${audio.name} (${++mediaCount}/${totalMedia})`);
-
-            // Delay después de cada elemento, excepto el último
-            if (mediaCount < totalMedia) {
-              await delay(2000); // Aumentado a 2s para evitar rate limiting
-            }
-          } catch (error) {
-            console.error("Error enviando audio:", error);
-          }
-        }
-      }
-
-      // Enviar videos con delay entre cada uno
+      // 5. Enviar videos con delay entre cada uno
       if (videosToSend && videosToSend.length > 0) {
         for (const video of videosToSend) {
           try {
             await MessageWasendService.sendVideo({
               phone: formattedPhone,
               videoUrl: video.imageUrl, // imageUrl contiene la URL del video
-              caption: video.description,
+              caption: video.description || video.name,
             });
-            console.log(`Video enviado: ${video.name} (${++mediaCount}/${totalMedia})`);
+            mediaCount++;
+            console.log(`🎬 Video enviado: ${video.name} (${mediaCount}/${totalMedia})`);
 
-            // Delay después de cada elemento, excepto el último
+            // Delay de 6 segundos entre cada elemento
             if (mediaCount < totalMedia) {
-              await delay(2000); // Aumentado a 2s para evitar rate limiting
+              await delay(6000);
             }
           } catch (error) {
-            console.error("Error enviando video:", error);
+            console.error("❌ Error enviando video:", error);
+          }
+        }
+      }
+
+      // 6. Enviar audios con delay entre cada uno
+      if (audiosToSend && audiosToSend.length > 0) {
+        for (const audio of audiosToSend) {
+          try {
+            await MessageWasendService.sendAudio({
+              phone: formattedPhone,
+              audioUrl: audio.imageUrl, // imageUrl contiene la URL del audio
+              caption: audio.name,
+            });
+            mediaCount++;
+            console.log(`🎵 Audio enviado: ${audio.name} (${mediaCount}/${totalMedia})`);
+
+            // Delay de 6 segundos entre cada elemento
+            if (mediaCount < totalMedia) {
+              await delay(6000);
+            }
+          } catch (error) {
+            console.error("❌ Error enviando audio:", error);
           }
         }
       }
     }
-    // FLUJO 4: Solo texto (sin ubicación ni imágenes)
+    // FLUJO 3: Solo texto (sin ubicación ni multimedia)
     else {
       if (context.shouldRespondWithAudio) {
         try {
