@@ -1,4 +1,3 @@
-const { pipeline } = require("@xenova/transformers");
 const { ChatCacheService } = require("./chat-cache-service.js");
 const { createHash } = require("crypto");
 
@@ -18,6 +17,8 @@ class EmbeddingsService {
 			// Cargar el pipeline solo una vez
 			if (!embeddingPipeline) {
 				console.log("🔄 Cargando modelo de embeddings...");
+				// Import dinámico para módulos ES
+				const { pipeline } = await import("@xenova/transformers");
 				embeddingPipeline = await pipeline(
 					"feature-extraction",
 					"Xenova/multilingual-e5-small"
