@@ -174,10 +174,54 @@ class AssistantService {
     }
   }
 
-  // Función para usar Groq para filtrar contenido multimedia relevante
+  // Función NUEVA: Decidir si debe enviar multimedia usando Groq
+  static async shouldSendMultimedia(userQuery, assistantResponse, mediaType) {
+    try {
+      const prompt = `Analiza esta conversación:
+
+Usuario: "${userQuery}"
+Asistente: "${assistantResponse}"
+
+¿El usuario está pidiendo EXPLÍCITAMENTE ver ${mediaType} o necesita contenido visual/multimedia para entender mejor?
+
+Responde SOLO:
+- "si" - si el usuario pide ver, mostrar, enviar ${mediaType} O si la respuesta se beneficiaría claramente con ${mediaType}
+- "no" - si solo pregunta información, ubicación, direcciones, horarios, o cualquier cosa que NO requiera ${mediaType}
+
+Ejemplos de NO enviar:
+- "¿Cómo llego a la sucursal?" → no
+- "¿Dónde está ubicado?" → no
+- "¿Cuánto cuesta?" → no
+- "¿Qué horarios tienen?" → no
+
+Ejemplos de SI enviar:
+- "Muéstrame fotos de los masajes" → si
+- "Quiero ver imágenes" → si
+- "¿Cómo es el lugar?" → si
+
+Respuesta:`;
+
+      const groqResponse = await groqClient.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 10,
+        temperature: 0.1,
+      });
+
+      const responseText = groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+
+      return responseText.includes("si") || responseText.includes("sí");
+    } catch (error) {
+      console.error("Error decidiendo si enviar multimedia:", error);
+      return false; // Por defecto NO enviar si hay error
+    }
+  }
+
+  // Función para usar Groq para filtrar contenido multimedia relevante (MÁS ESTRICTO)
   static async filterMediaWithGroq(
     mediaItems,
     userQuery,
+    assistantResponse,
     mediaType,
     maxItems = 3
   ) {
@@ -193,12 +237,21 @@ class AssistantService {
         )
         .join("\n");
 
-      const prompt = `Usuario pregunta: "${userQuery}"
+      const prompt = `Conversación:
+Usuario: "${userQuery}"
+Asistente: "${assistantResponse}"
 
 ${mediaType} disponibles:
 ${mediaList}
 
-Selecciona hasta ${maxItems} ${mediaType} que podrían interesar al usuario. Sé generoso, si hay relación directa o indirecta, inclúyelo. Solo responde "ninguno" si definitivamente no hay ninguna relación.
+INSTRUCCIONES ESTRICTAS:
+1. Solo selecciona ${mediaType} que sean DIRECTAMENTE relevantes a lo que el usuario pregunta
+2. Si pregunta por una sucursal específica (ej: "El Alto"), NO envíes imágenes genéricas de sucursales
+3. Si pregunta cómo llegar o ubicación, responde "ninguno"
+4. Si pregunta información general sin pedir ver contenido, responde "ninguno"
+5. Solo envía si el usuario explícitamente quiere VER algo o si el contenido ayuda a responder su pregunta
+
+Selecciona hasta ${maxItems} ${mediaType} que sean REALMENTE necesarios. Si ninguno es relevante, responde "ninguno".
 
 Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
 
@@ -206,18 +259,22 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
         model: "llama-3.3-70b-versatile",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 50,
-        temperature: 0.5,
+        temperature: 0.2,
       });
 
       const responseText =
         groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
 
+      console.log(`🤖 Groq filtro de ${mediaType}:`, responseText);
+
       // Si la respuesta es "ninguno" o vacía, no enviar nada
       if (
         responseText === "ninguno" ||
         responseText === "ninguna" ||
+        responseText === "0" ||
         !responseText
       ) {
+        console.log(`⛔ Groq decidió NO enviar ${mediaType}`);
         return [];
       }
 
@@ -228,12 +285,19 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
           ?.map((num) => parseInt(num) - 1)
           .filter((idx) => idx >= 0 && idx < mediaItems.length) || [];
 
+      if (selectedIndexes.length === 0) {
+        console.log(`⛔ No se encontraron ${mediaType} relevantes`);
+        return [];
+      }
+
       // Devolver los items seleccionados
-      return selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
+      const selected = selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
+      console.log(`✅ Groq seleccionó ${selected.length} ${mediaType}:`, selected.map(s => s.name));
+      return selected;
     } catch (error) {
       console.error("Error filtrando multimedia con Groq:", error);
-      // Fallback al método anterior si falla Groq
-      return this.findBestMedia(mediaItems, userQuery, maxItems);
+      // En caso de error, NO enviar nada (más seguro)
+      return [];
     }
   }
 
@@ -657,7 +721,7 @@ Respuesta:`;
             userText.includes(keyword) || responseLower.includes(keyword)
         );
 
-        // Buscar multimedia SIEMPRE (con ubicación o sin ella)
+        // Buscar multimedia SOLO SI GROQ DECIDE QUE ES NECESARIO
         if (activeImages.length > 0) {
           // Separar contenido por tipo
           const images = activeImages.filter(
@@ -666,50 +730,76 @@ Respuesta:`;
           const audios = activeImages.filter((item) => item.type === "audio");
           const videos = activeImages.filter((item) => item.type === "video");
 
-          // Crear contexto de búsqueda (incluye ubicación si existe)
-          const searchContext = locationToSend
-            ? `${concatenatedUserText} ${locationToSend.name} ${
-                locationToSend.description || ""
-              }`
-            : concatenatedUserText;
+          // Primero, decidir si debe enviar cada tipo de multimedia
+          console.log("🤔 Analizando si debe enviar multimedia...");
 
-          // Buscar imágenes usando Groq (siempre, no solo si hay keyword)
+          // IMÁGENES: Decidir y filtrar
           if (images.length > 0) {
-            imagesToSend = await this.filterMediaWithGroq(
-              images,
-              searchContext,
-              "imágenes",
-              3
+            const shouldSendImages = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "imágenes"
             );
-            console.log(
-              `✅ Imágenes seleccionadas con Groq: ${imagesToSend.length}`
-            );
+
+            if (shouldSendImages) {
+              console.log("✅ Groq decidió que SÍ debe enviar imágenes");
+              imagesToSend = await this.filterMediaWithGroq(
+                images,
+                concatenatedUserText,
+                cleanedResponse,
+                "imágenes",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar imágenes");
+              imagesToSend = [];
+            }
           }
 
-          // Buscar videos usando Groq
+          // VIDEOS: Decidir y filtrar
           if (videos.length > 0) {
-            videosToSend = await this.filterMediaWithGroq(
-              videos,
-              searchContext,
-              "videos",
-              3
+            const shouldSendVideos = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "videos"
             );
-            console.log(
-              `✅ Videos seleccionados con Groq: ${videosToSend.length}`
-            );
+
+            if (shouldSendVideos) {
+              console.log("✅ Groq decidió que SÍ debe enviar videos");
+              videosToSend = await this.filterMediaWithGroq(
+                videos,
+                concatenatedUserText,
+                cleanedResponse,
+                "videos",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar videos");
+              videosToSend = [];
+            }
           }
 
-          // Buscar audios usando Groq
+          // AUDIOS: Decidir y filtrar
           if (audios.length > 0) {
-            audiosToSend = await this.filterMediaWithGroq(
-              audios,
-              searchContext,
-              "audios",
-              3
+            const shouldSendAudios = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "audios"
             );
-            console.log(
-              `✅ Audios seleccionados con Groq: ${audiosToSend.length}`
-            );
+
+            if (shouldSendAudios) {
+              console.log("✅ Groq decidió que SÍ debe enviar audios");
+              audiosToSend = await this.filterMediaWithGroq(
+                audios,
+                concatenatedUserText,
+                cleanedResponse,
+                "audios",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar audios");
+              audiosToSend = [];
+            }
           }
         }
 
