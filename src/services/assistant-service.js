@@ -1,5 +1,5 @@
 require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
-const { cohereClient } = require("../config/clients/cohere-client.js");
+const { groqClient } = require("../config/clients/groq-client.js");
 const { qdrantClient } = require("../config/clients/qdrant-client.js");
 const { ChatHistoryService } = require("./chat-history-service.js");
 const { EmbeddingsService } = require("./embeddings-service.js");
@@ -201,7 +201,7 @@ class AssistantService {
 
     try {
       const messages = chat;
-      const model = "command-a-03-2025";
+      const model = "llama-3.3-70b-versatile";
       const collection = process.env.COLLECTION_QT || "documentos";
 
       try {
@@ -327,33 +327,64 @@ class AssistantService {
           content: extractTextFromMessage(m),
         }));
 
-        console.log(`Enviando ${normalizedMessages.length} mensajes a Cohere`);
-
-        let cohereResponse;
-
-        try {
-          cohereResponse = await cohereClient.chat({
-            model,
-            documents: contextDocuments,
-            messages: normalizedMessages,
-            maxTokens: 200,
-          });
-        } catch (error) {
-          console.error("Error en la llamada a Cohere:", error);
-          return { error: "Error al procesar el chat con Cohere" };
+        // Preparar contexto de documentos para Groq
+        let contextText = "";
+        if (contextDocuments.length > 0) {
+          contextText = "\n\nCONTEXTO DISPONIBLE:\n" +
+            contextDocuments.map(doc => doc.data.text).join("\n\n");
         }
 
-        const { message: responseMessage } = cohereResponse;
+        // Preparar mensajes para Groq
+        const groqMessages = [];
 
-        const cleanedResponse = formatForWhatsApp(
-          responseMessage.content[0].text
-        );
-        responseMessage.content[0].text = cleanedResponse;
+        // Agregar contexto al primer mensaje del sistema si existe
+        if (normalizedMessages.length > 0 && normalizedMessages[0].role === 'system') {
+          groqMessages.push({
+            role: 'system',
+            content: normalizedMessages[0].content + contextText
+          });
+          groqMessages.push(...normalizedMessages.slice(1));
+        } else {
+          // Si no hay mensaje de sistema, agregar el contexto al primer mensaje de usuario
+          if (normalizedMessages.length > 0) {
+            const firstMessage = normalizedMessages[0];
+            groqMessages.push({
+              role: firstMessage.role,
+              content: firstMessage.content + contextText
+            });
+            groqMessages.push(...normalizedMessages.slice(1));
+          }
+        }
+
+        console.log(`Enviando ${groqMessages.length} mensajes a Groq`);
+
+        let groqResponse;
+
+        try {
+          groqResponse = await groqClient.chat.completions.create({
+            model,
+            messages: groqMessages,
+            max_tokens: 200,
+            temperature: 0.7,
+          });
+        } catch (error) {
+          console.error("Error en la llamada a Groq:", error);
+          return { error: "Error al procesar el chat con Groq" };
+        }
+
+        const responseText = groqResponse.choices[0]?.message?.content || "";
+        const cleanedResponse = formatForWhatsApp(responseText);
+
+        // Formato de respuesta compatible con el código existente
+        const responseMessage = {
+          role: 'assistant',
+          content: [{ type: 'text', text: cleanedResponse }]
+        };
 
         // Detectar si la respuesta indica envío de ubicación o imagen
-        const responseText = cleanedResponse.toLowerCase();
+        const responseLower = cleanedResponse.toLowerCase();
         const userText = getUnrespondedUserMessages(messages).toLowerCase();
-        const combinedText = `${userText} ${responseText}`;
+        const combinedText = `${userText} ${responseLower}`;
 
         let locationToSend = null;
         let imagesToSend = [];
@@ -370,7 +401,7 @@ class AssistantService {
 
         const isInitialLocationQuery = initialLocationKeywords.some(keyword =>
           userText.includes(keyword)
-        ) && !responseText.includes("te envío") && !responseText.includes("te envio");
+        ) && !responseLower.includes("te envío") && !responseLower.includes("te envio");
 
         if (isInitialLocationQuery && activeLocations.length > 0) {
           // Primera vez que pregunta: listar ubicaciones disponibles
@@ -393,9 +424,9 @@ class AssistantService {
             const locationName = location.name.toLowerCase();
             if (
               userText.includes(locationName) ||
-              responseText.includes(locationName) ||
-              responseText.includes("te envío") ||
-              responseText.includes("te envio")
+              responseLower.includes(locationName) ||
+              responseLower.includes("te envío") ||
+              responseLower.includes("te envio")
             ) {
               locationToSend = location;
               console.log(`Ubicación seleccionada para envío: ${location.name}`);
@@ -404,7 +435,7 @@ class AssistantService {
           }
 
           // Si no encontró una específica, usar similitud
-          if (!locationToSend && (responseText.includes("te envío") || responseText.includes("te envio"))) {
+          if (!locationToSend && (responseLower.includes("te envío") || responseLower.includes("te envio"))) {
             locationToSend = this.findBestLocation(activeLocations, combinedText);
             console.log(`Ubicación por similitud: ${locationToSend?.name || 'ninguna'}`);
           }
@@ -426,17 +457,17 @@ class AssistantService {
           "video", "vídeo", "clip", "grabación", "grabacion"
         ];
 
-        // Verificar keywords SOLO en userText y responseText (no en combinedText)
+        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
         const hasImageKeyword = imageKeywords.some(keyword =>
-          userText.includes(keyword) || responseText.includes(keyword)
+          userText.includes(keyword) || responseLower.includes(keyword)
         );
 
         const hasAudioKeyword = audioKeywords.some(keyword =>
-          userText.includes(keyword) || responseText.includes(keyword)
+          userText.includes(keyword) || responseLower.includes(keyword)
         );
 
         const hasVideoKeyword = videoKeywords.some(keyword =>
-          userText.includes(keyword) || responseText.includes(keyword)
+          userText.includes(keyword) || responseLower.includes(keyword)
         );
 
         // Buscar multimedia INDEPENDIENTEMENTE de si hay ubicación

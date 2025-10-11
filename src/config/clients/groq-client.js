@@ -1,0 +1,11 @@
+require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
+
+const Groq = require("groq-sdk");
+
+const groqClient = new Groq({
+	apiKey: process.env.GROQ_API_KEY,
+});
+
+module.exports = {
+	groqClient,
+};
