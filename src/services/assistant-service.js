@@ -208,7 +208,8 @@ Respuesta:`;
         temperature: 0.1,
       });
 
-      const responseText = groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+      const responseText =
+        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
 
       return responseText.includes("si") || responseText.includes("sí");
     } catch (error) {
@@ -217,7 +218,7 @@ Respuesta:`;
     }
   }
 
-  // Función para usar Groq para filtrar contenido multimedia relevante (MÁS ESTRICTO)
+  // Función para usar Groq para filtrar contenido multimedia relevante
   static async filterMediaWithGroq(
     mediaItems,
     userQuery,
@@ -237,16 +238,14 @@ Respuesta:`;
         )
         .join("\n");
 
-      const prompt = `Conversación:
-Usuario: "${userQuery}"
-Asistente: "${assistantResponse}"
+      const prompt = `Usuario pregunta: "${userQuery}"
 
 ${mediaType} disponibles:
 ${mediaList}
 
 INSTRUCCIONES ESTRICTAS:
 1. Solo selecciona ${mediaType} que sean DIRECTAMENTE relevantes a lo que el usuario pregunta
-2. Si pregunta por una sucursal específica (ej: "El Alto"), NO envíes imágenes genéricas de sucursales
+2. Si pregunta por una sucursal específica (ej: "Santa Marta"), NO envíes imágenes de otras sucursales
 3. Si pregunta cómo llegar o ubicación, responde "ninguno"
 4. Si pregunta información general sin pedir ver contenido, responde "ninguno"
 5. Solo envía si el usuario explícitamente quiere VER algo o si el contenido ayuda a responder su pregunta
@@ -259,22 +258,18 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
         model: "llama-3.3-70b-versatile",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 50,
-        temperature: 0.2,
+        temperature: 0.5,
       });
 
       const responseText =
         groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
 
-      console.log(`🤖 Groq filtro de ${mediaType}:`, responseText);
-
       // Si la respuesta es "ninguno" o vacía, no enviar nada
       if (
         responseText === "ninguno" ||
         responseText === "ninguna" ||
-        responseText === "0" ||
         !responseText
       ) {
-        console.log(`⛔ Groq decidió NO enviar ${mediaType}`);
         return [];
       }
 
@@ -285,19 +280,12 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
           ?.map((num) => parseInt(num) - 1)
           .filter((idx) => idx >= 0 && idx < mediaItems.length) || [];
 
-      if (selectedIndexes.length === 0) {
-        console.log(`⛔ No se encontraron ${mediaType} relevantes`);
-        return [];
-      }
-
       // Devolver los items seleccionados
-      const selected = selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
-      console.log(`✅ Groq seleccionó ${selected.length} ${mediaType}:`, selected.map(s => s.name));
-      return selected;
+      return selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
     } catch (error) {
       console.error("Error filtrando multimedia con Groq:", error);
-      // En caso de error, NO enviar nada (más seguro)
-      return [];
+      // Fallback al método anterior si falla Groq
+      return this.findBestMedia(mediaItems, userQuery, maxItems);
     }
   }
 
