@@ -231,8 +231,33 @@ Respuesta:`;
     }
 
     try {
-      // Crear lista de opciones para Groq
-      const mediaList = mediaItems
+      // Pre-filtrar para items con similitud alta
+      const queryLower = userQuery.toLowerCase();
+      const words = queryLower.split(/\s+/).filter((word) => word.length > 2);
+      const mainTerm = words.slice(-2).join(" "); // Últimas 2 palabras como término principal
+      const preFilteredItems = mediaItems.filter((item) => {
+        const itemText = `${item.name} ${item.description}`;
+        const similarity = this.calculateSimilarity(userQuery, itemText);
+        return similarity > 2; // Umbral de similitud para incluir
+      });
+
+      if (preFilteredItems.length === 0) {
+        console.log(
+          `⛔ No hay ${mediaType} con similitud suficiente para "${userQuery}"`
+        );
+        return [];
+      }
+
+      console.log(
+        `🔍 Pre-filtrados ${preFilteredItems.length} ${mediaType} relevantes para "${userQuery}" (término principal: "${mainTerm}")`
+      );
+      console.log(
+        `📋 Items pre-filtrados:`,
+        preFilteredItems.map((item) => `${item.name} - ${item.description}`)
+      );
+
+      // Crear lista de opciones para Groq con los pre-filtrados
+      const mediaList = preFilteredItems
         .map(
           (item, index) => `${index + 1}. ${item.name} - ${item.description}`
         )
@@ -240,7 +265,7 @@ Respuesta:`;
 
       const prompt = `Usuario pregunta: "${userQuery}"
 
-${mediaType} disponibles:
+${mediaType} relevantes (ya filtrados por similitud):
 ${mediaList}
 
 INSTRUCCIONES ESTRICTAS:
@@ -278,10 +303,22 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
         responseText
           .match(/\d+/g)
           ?.map((num) => parseInt(num) - 1)
-          .filter((idx) => idx >= 0 && idx < mediaItems.length) || [];
+          .filter((idx) => idx >= 0 && idx < preFilteredItems.length) || [];
+
+      if (selectedIndexes.length === 0) {
+        console.log(`⛔ No se encontraron ${mediaType} relevantes`);
+        return [];
+      }
 
       // Devolver los items seleccionados
-      return selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
+      const selected = selectedIndexes
+        .slice(0, maxItems)
+        .map((idx) => preFilteredItems[idx]);
+      console.log(
+        `✅ Groq seleccionó ${selected.length} ${mediaType}:`,
+        selected.map((s) => s.name)
+      );
+      return selected;
     } catch (error) {
       console.error("Error filtrando multimedia con Groq:", error);
       // Fallback al método anterior si falla Groq
