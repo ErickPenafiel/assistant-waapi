@@ -185,7 +185,7 @@ Asistente: "${assistantResponse}"
 ¿El usuario está pidiendo EXPLÍCITAMENTE ver ${mediaType} o necesita contenido visual/multimedia para entender mejor?
 
 Responde SOLO:
-- "si" - si el usuario pide ver, mostrar, enviar ${mediaType} O si la respuesta se beneficiaría claramente con ${mediaType}
+- "si" - si el usuario pide ver, mostrar, enviar ${mediaType}
 - "no" - si solo pregunta información, ubicación, direcciones, horarios, o cualquier cosa que NO requiera ${mediaType}
 
 Ejemplos de NO enviar:
@@ -208,7 +208,8 @@ Respuesta:`;
         temperature: 0.1,
       });
 
-      const responseText = groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+      const responseText =
+        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
 
       return responseText.includes("si") || responseText.includes("sí");
     } catch (error) {
@@ -217,7 +218,7 @@ Respuesta:`;
     }
   }
 
-  // Función para usar Groq para filtrar contenido multimedia relevante (MÁS ESTRICTO)
+  // Función para usar Groq para filtrar contenido multimedia relevante
   static async filterMediaWithGroq(
     mediaItems,
     userQuery,
@@ -230,23 +231,46 @@ Respuesta:`;
     }
 
     try {
-      // Crear lista de opciones para Groq
-      const mediaList = mediaItems
+      // Pre-filtrar para items con similitud alta
+      const queryLower = userQuery.toLowerCase();
+      const words = queryLower.split(/\s+/).filter((word) => word.length > 2);
+      const mainTerm = words.slice(-2).join(" "); // Últimas 2 palabras como término principal
+      const preFilteredItems = mediaItems.filter((item) => {
+        const itemText = `${item.name} ${item.description}`;
+        const similarity = this.calculateSimilarity(userQuery, itemText);
+        return similarity > 2; // Umbral de similitud para incluir
+      });
+
+      if (preFilteredItems.length === 0) {
+        console.log(
+          `⛔ No hay ${mediaType} con similitud suficiente para "${userQuery}"`
+        );
+        return [];
+      }
+
+      console.log(
+        `🔍 Pre-filtrados ${preFilteredItems.length} ${mediaType} relevantes para "${userQuery}" (término principal: "${mainTerm}")`
+      );
+      console.log(
+        `📋 Items pre-filtrados:`,
+        preFilteredItems.map((item) => `${item.name} - ${item.description}`)
+      );
+
+      // Crear lista de opciones para Groq con los pre-filtrados
+      const mediaList = preFilteredItems
         .map(
           (item, index) => `${index + 1}. ${item.name} - ${item.description}`
         )
         .join("\n");
 
-      const prompt = `Conversación:
-Usuario: "${userQuery}"
-Asistente: "${assistantResponse}"
+      const prompt = `Usuario pregunta: "${userQuery}"
 
-${mediaType} disponibles:
+${mediaType} relevantes (ya filtrados por similitud):
 ${mediaList}
 
 INSTRUCCIONES ESTRICTAS:
 1. Solo selecciona ${mediaType} que sean DIRECTAMENTE relevantes a lo que el usuario pregunta
-2. Si pregunta por una sucursal específica (ej: "El Alto"), NO envíes imágenes genéricas de sucursales
+2. Si pregunta por una sucursal específica (ej: "Santa Marta"), NO envíes imágenes de otras sucursales
 3. Si pregunta cómo llegar o ubicación, responde "ninguno"
 4. Si pregunta información general sin pedir ver contenido, responde "ninguno"
 5. Solo envía si el usuario explícitamente quiere VER algo o si el contenido ayuda a responder su pregunta
@@ -259,22 +283,18 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
         model: "llama-3.3-70b-versatile",
         messages: [{ role: "user", content: prompt }],
         max_tokens: 50,
-        temperature: 0.2,
+        temperature: 0.5,
       });
 
       const responseText =
         groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
 
-      console.log(`🤖 Groq filtro de ${mediaType}:`, responseText);
-
       // Si la respuesta es "ninguno" o vacía, no enviar nada
       if (
         responseText === "ninguno" ||
         responseText === "ninguna" ||
-        responseText === "0" ||
         !responseText
       ) {
-        console.log(`⛔ Groq decidió NO enviar ${mediaType}`);
         return [];
       }
 
@@ -283,7 +303,7 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
         responseText
           .match(/\d+/g)
           ?.map((num) => parseInt(num) - 1)
-          .filter((idx) => idx >= 0 && idx < mediaItems.length) || [];
+          .filter((idx) => idx >= 0 && idx < preFilteredItems.length) || [];
 
       if (selectedIndexes.length === 0) {
         console.log(`⛔ No se encontraron ${mediaType} relevantes`);
@@ -291,13 +311,18 @@ Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
       }
 
       // Devolver los items seleccionados
-      const selected = selectedIndexes.slice(0, maxItems).map((idx) => mediaItems[idx]);
-      console.log(`✅ Groq seleccionó ${selected.length} ${mediaType}:`, selected.map(s => s.name));
+      const selected = selectedIndexes
+        .slice(0, maxItems)
+        .map((idx) => preFilteredItems[idx]);
+      console.log(
+        `✅ Groq seleccionó ${selected.length} ${mediaType}:`,
+        selected.map((s) => s.name)
+      );
       return selected;
     } catch (error) {
       console.error("Error filtrando multimedia con Groq:", error);
-      // En caso de error, NO enviar nada (más seguro)
-      return [];
+      // Fallback al método anterior si falla Groq
+      return this.findBestMedia(mediaItems, userQuery, maxItems);
     }
   }
 
@@ -581,94 +606,53 @@ Respuesta:`;
         let videosToSend = [];
         let shouldListLocations = false;
 
-        // Detectar si es una pregunta inicial sobre ubicaciones (listar opciones)
-        const initialLocationKeywords = [
-          "dónde",
-          "donde",
+        // Ahora decidir si enviar ubicación usando Groq si hay una seleccionada
+        if (locationToSend) {
+          const shouldSendLocation = await this.shouldSendMultimedia(
+            concatenatedUserText,
+            cleanedResponse,
+            "ubicación"
+          );
+
+          if (shouldSendLocation) {
+            console.log("✅ Groq decidió que SÍ debe enviar ubicación");
+          } else {
+            console.log("⛔ Groq decidió NO enviar ubicación");
+            locationToSend = null;
+          }
+        }
+
+        // BUSCAR ubicación SOLO basado en keywords del USUARIO y RESPUESTA
+        const locationKeywords = [
           "ubicación",
           "ubicacion",
           "dirección",
           "direccion",
-          "quedan",
-          "ubicados",
-          "ubicadas",
-          "están",
-          "sucursales",
+          "dónde",
+          "donde",
+          "llegar",
+          "llegue",
+          "cómo llegar",
+          "como llegar",
         ];
 
-        // Detectar si pregunta por ubicación de forma general
-        const isGeneralLocationQuery =
-          userText.includes("dónde") ||
-          userText.includes("donde") ||
-          userText.includes("ubicación") ||
-          userText.includes("ubicacion") ||
-          userText.includes("dirección") ||
-          userText.includes("direccion");
+        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
+        const hasLocationKeyword = locationKeywords.some(
+          (keyword) =>
+            userText.includes(keyword) || responseLower.includes(keyword)
+        );
 
-        if (isGeneralLocationQuery && activeLocations.length > 0) {
-          // Si menciona una ubicación específica, enviarla
-          const mentionedLocation = activeLocations.find((loc) =>
-            userText.includes(loc.name.toLowerCase())
+        // Buscar ubicación SOLO SI GROQ DECIDE QUE ES NECESARIO
+        if (activeLocations.length > 0 && hasLocationKeyword) {
+          console.log(
+            "✅ Detectadas keywords de ubicación, enviando ubicación"
           );
-
-          if (mentionedLocation) {
-            // Enviar la ubicación específica mencionada
-            locationToSend = mentionedLocation;
-            console.log(
-              `📍 Ubicación específica detectada: ${mentionedLocation.name}`
-            );
-          }
-          // Si solo hay UNA ubicación, enviarla directamente
-          else if (activeLocations.length === 1) {
-            locationToSend = activeLocations[0];
-            console.log(
-              `📍 Enviando única ubicación disponible: ${locationToSend.name}`
-            );
-          }
-          // Si hay múltiples y no especifica, listarlas de forma breve
-          else if (activeLocations.length > 1) {
-            shouldListLocations = true;
-            let locationsList = "Claro, tenemos sucursales en:\n\n";
-            activeLocations.forEach((loc) => {
-              locationsList += `• ${loc.name}\n`;
-            });
-            locationsList += "\n¿De cuál necesitas la ubicación?";
-            responseMessage.content[0].text = locationsList;
-          }
-        }
-        // Si no preguntó por ubicación general, buscar si eligió alguna
-        else if (activeLocations.length > 0) {
-          // Buscar si menciona alguna ubicación específica
-          for (const location of activeLocations) {
-            const locationName = location.name.toLowerCase();
-            if (
-              userText.includes(locationName) ||
-              responseLower.includes(locationName) ||
-              responseLower.includes("te envío") ||
-              responseLower.includes("te envio")
-            ) {
-              locationToSend = location;
-              console.log(
-                `Ubicación seleccionada para envío: ${location.name}`
-              );
-              break;
-            }
-          }
-
-          // Si no encontró una específica, usar similitud
-          if (
-            !locationToSend &&
-            (responseLower.includes("te envío") ||
-              responseLower.includes("te envio"))
-          ) {
-            locationToSend = this.findBestLocation(
-              activeLocations,
-              combinedText
-            );
-            console.log(
-              `Ubicación por similitud: ${locationToSend?.name || "ninguna"}`
-            );
-          }
+          locationToSend = this.findBestLocation(activeLocations, combinedText);
+          console.log(
+            `📍 Ubicación seleccionada por similitud: ${
+              locationToSend?.name || "ninguna"
+            }`
+          );
         }
 
         // BUSCAR contenido multimedia SOLO basado en keywords del USUARIO y RESPUESTA
@@ -804,14 +788,29 @@ Respuesta:`;
         }
 
         // Log de depuración
-        if (locationToSend) {
-          console.log("📍 Location a enviar:", {
-            name: locationToSend.name,
-            latitude: locationToSend.latitude,
-            longitude: locationToSend.longitude,
-            address: locationToSend.address,
-          });
-        }
+        // if (locationToSend.length > 0) {
+        //   const shouldSendLocation = await this.shouldSendMultimedia(
+        //     concatenatedUserText,
+        //     cleanedResponse,
+        //     "ubicación"
+        //   );
+
+        //   if (shouldSendLocation) {
+        //     console.log("✅ Groq decidió que SÍ debe enviar ubicación");
+        //     // No usar filterMediaWithGroq para ubicación, ya que no es multimedia
+        //   } else {
+        //     console.log("⛔ Groq decidió NO enviar ubicación");
+        //     locationToSend = null;
+        //   }
+        // }
+        // if (locationToSend) {
+        //   console.log("📍 Location a enviar:", {
+        //     name: locationToSend.name,
+        //     latitude: locationToSend.latitude,
+        //     longitude: locationToSend.longitude,
+        //     address: locationToSend.address,
+        //   });
+        // }
 
         return {
           response: responseMessage,
