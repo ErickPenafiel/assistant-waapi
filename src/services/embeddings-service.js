@@ -1,6 +1,8 @@
-const { cohereClient } = require("../config/clients/cohere-client.js");
 const { ChatCacheService } = require("./chat-cache-service.js");
 const { createHash } = require("crypto");
+
+// Cache del modelo para evitar recargarlo en cada llamada
+let embeddingPipeline = null;
 
 class EmbeddingsService {
 	static async getEmbeddingOrCachedResponse({ text }) {
@@ -12,23 +14,37 @@ class EmbeddingsService {
 				return { embedding: data.embedding, response: data.response, hash };
 			}
 
-			const { embeddings } = await cohereClient.embed({
-				model: "embed-multilingual-v3.0",
-				embeddingTypes: ["float"],
-				texts: [text],
-				inputType: "search_query",
+			// Cargar el pipeline solo una vez
+			if (!embeddingPipeline) {
+				console.log("🔄 Cargando modelo de embeddings...");
+				// Import dinámico para módulos ES
+				const { pipeline } = await import("@xenova/transformers");
+				embeddingPipeline = await pipeline(
+					"feature-extraction",
+					"Xenova/multilingual-e5-small"
+				);
+				console.log("✅ Modelo de embeddings cargado");
+			}
+
+			// Generar embedding
+			const output = await embeddingPipeline(text, {
+				pooling: "mean",
+				normalize: true,
 			});
+
+			// Convertir a array de números
+			const embedding = Array.from(output.data);
 
 			const { cacheData } = await ChatCacheService.setChatCache({
 				hash,
-				embedding: embeddings.float[0],
+				embedding: embedding,
 				response: null,
 			});
 
-			return { embedding: embeddings.float[0], response: null, hash };
+			return { embedding: embedding, response: null, hash };
 		} catch (error) {
-			console.error("❌ Error al obtener el historial de chat:", error);
-			throw new Error("Error al obtener el historial de chat");
+			console.error("❌ Error al obtener el embedding:", error);
+			throw new Error("Error al obtener el embedding");
 		}
 	}
 }

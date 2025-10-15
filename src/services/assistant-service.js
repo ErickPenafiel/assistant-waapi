@@ -1,5 +1,5 @@
 require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
-const { cohereClient } = require("../config/clients/cohere-client.js");
+const { groqClient } = require("../config/clients/groq-client.js");
 const { qdrantClient } = require("../config/clients/qdrant-client.js");
 const { ChatHistoryService } = require("./chat-history-service.js");
 const { EmbeddingsService } = require("./embeddings-service.js");
@@ -104,6 +104,298 @@ function getUnrespondedUserMessages(messages) {
 }
 
 class AssistantService {
+  static async getActiveLocations() {
+    try {
+      const locationsRef = db.collection("locations");
+      const snapshot = await locationsRef.where("active", "==", true).get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+    } catch (error) {
+      console.error("Error getting active locations:", error);
+      return [];
+    }
+  }
+
+  // Función para calcular similitud entre textos
+  static calculateSimilarity(text1, text2) {
+    const words1 = text1
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+    const words2 = text2
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+
+    let matches = 0;
+    words1.forEach((word) => {
+      if (words2.some((w) => w.includes(word) || word.includes(w))) {
+        matches++;
+      }
+    });
+
+    return matches;
+  }
+
+  // Función para encontrar la mejor ubicación
+  static findBestLocation(locations, searchText) {
+    let bestMatch = null;
+    let bestScore = 0;
+
+    locations.forEach((location) => {
+      const locationText = `${location.name} ${location.description} ${location.address}`;
+      const score = this.calculateSimilarity(searchText, locationText);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = location;
+      }
+    });
+
+    // Si no hay coincidencia, devolver la primera ubicación activa
+    return bestMatch || locations[0] || null;
+  }
+
+  static async getActivePromptImages() {
+    try {
+      const imagesRef = db.collection("prompt_images");
+      const snapshot = await imagesRef.where("active", "==", true).get();
+
+      return snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+    } catch (error) {
+      console.error("Error getting active prompt media:", error);
+      return [];
+    }
+  }
+
+  // Función NUEVA: Decidir si debe enviar multimedia usando Groq
+  static async shouldSendMultimedia(userQuery, assistantResponse, mediaType) {
+    try {
+      const prompt = `Analiza esta conversación:
+
+Usuario: "${userQuery}"
+Asistente: "${assistantResponse}"
+
+¿El usuario está pidiendo EXPLÍCITAMENTE ver ${mediaType} o necesita contenido visual/multimedia para entender mejor?
+
+Responde SOLO:
+- "si" - si el usuario pide ver, mostrar, enviar ${mediaType}
+- "no" - si solo pregunta información, ubicación, direcciones, horarios, o cualquier cosa que NO requiera ${mediaType}
+
+Ejemplos de NO enviar:
+- "¿Cómo llego a la sucursal?" → no
+- "¿Dónde está ubicado?" → no
+- "¿Cuánto cuesta?" → no
+- "¿Qué horarios tienen?" → no
+
+Ejemplos de SI enviar:
+- "Muéstrame fotos de los masajes" → si
+- "Quiero ver imágenes" → si
+- "¿Cómo es el lugar?" → si
+
+Respuesta:`;
+
+      const groqResponse = await groqClient.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 10,
+        temperature: 0.1,
+      });
+
+      const responseText =
+        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+
+      return responseText.includes("si") || responseText.includes("sí");
+    } catch (error) {
+      console.error("Error decidiendo si enviar multimedia:", error);
+      return false; // Por defecto NO enviar si hay error
+    }
+  }
+
+  // Función para usar Groq para filtrar contenido multimedia relevante
+  static async filterMediaWithGroq(
+    mediaItems,
+    userQuery,
+    assistantResponse,
+    mediaType,
+    maxItems = 3
+  ) {
+    if (!mediaItems || mediaItems.length === 0) {
+      return [];
+    }
+
+    try {
+      // Pre-filtrar para items con similitud alta
+      const queryLower = userQuery.toLowerCase();
+      const words = queryLower.split(/\s+/).filter((word) => word.length > 2);
+      const mainTerm = words.slice(-2).join(" "); // Últimas 2 palabras como término principal
+      const preFilteredItems = mediaItems.filter((item) => {
+        const itemText = `${item.name} ${item.description}`;
+        const similarity = this.calculateSimilarity(userQuery, itemText);
+        return similarity > 2; // Umbral de similitud para incluir
+      });
+
+      if (preFilteredItems.length === 0) {
+        console.log(
+          `⛔ No hay ${mediaType} con similitud suficiente para "${userQuery}"`
+        );
+        return [];
+      }
+
+      console.log(
+        `🔍 Pre-filtrados ${preFilteredItems.length} ${mediaType} relevantes para "${userQuery}" (término principal: "${mainTerm}")`
+      );
+      console.log(
+        `📋 Items pre-filtrados:`,
+        preFilteredItems.map((item) => `${item.name} - ${item.description}`)
+      );
+
+      // Crear lista de opciones para Groq con los pre-filtrados
+      const mediaList = preFilteredItems
+        .map(
+          (item, index) => `${index + 1}. ${item.name} - ${item.description}`
+        )
+        .join("\n");
+
+      const prompt = `Usuario pregunta: "${userQuery}"
+
+${mediaType} relevantes (ya filtrados por similitud):
+${mediaList}
+
+INSTRUCCIONES ESTRICTAS:
+1. Solo selecciona ${mediaType} que sean DIRECTAMENTE relevantes a lo que el usuario pregunta
+2. Si pregunta por una sucursal específica (ej: "Santa Marta"), NO envíes imágenes de otras sucursales
+3. Si pregunta cómo llegar o ubicación, responde "ninguno"
+4. Si pregunta información general sin pedir ver contenido, responde "ninguno"
+5. Solo envía si el usuario explícitamente quiere VER algo o si el contenido ayuda a responder su pregunta
+
+Selecciona hasta ${maxItems} ${mediaType} que sean REALMENTE necesarios. Si ninguno es relevante, responde "ninguno".
+
+Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
+
+      const groqResponse = await groqClient.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 50,
+        temperature: 0.5,
+      });
+
+      const responseText =
+        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+
+      // Si la respuesta es "ninguno" o vacía, no enviar nada
+      if (
+        responseText === "ninguno" ||
+        responseText === "ninguna" ||
+        !responseText
+      ) {
+        return [];
+      }
+
+      // Extraer números de la respuesta
+      const selectedIndexes =
+        responseText
+          .match(/\d+/g)
+          ?.map((num) => parseInt(num) - 1)
+          .filter((idx) => idx >= 0 && idx < preFilteredItems.length) || [];
+
+      if (selectedIndexes.length === 0) {
+        console.log(`⛔ No se encontraron ${mediaType} relevantes`);
+        return [];
+      }
+
+      // Devolver los items seleccionados
+      const selected = selectedIndexes
+        .slice(0, maxItems)
+        .map((idx) => preFilteredItems[idx]);
+      console.log(
+        `✅ Groq seleccionó ${selected.length} ${mediaType}:`,
+        selected.map((s) => s.name)
+      );
+      return selected;
+    } catch (error) {
+      console.error("Error filtrando multimedia con Groq:", error);
+      // Fallback al método anterior si falla Groq
+      return this.findBestMedia(mediaItems, userQuery, maxItems);
+    }
+  }
+
+  // Función para encontrar el mejor contenido multimedia (imágenes, audios, videos) - FALLBACK
+  static findBestMedia(mediaItems, searchText, maxItems = 3) {
+    const scored = mediaItems.map((item) => {
+      const itemText = `${item.name} ${item.description}`;
+      const score = this.calculateSimilarity(searchText, itemText);
+      return { ...item, score };
+    });
+
+    // Ordenar por score descendente
+    scored.sort((a, b) => b.score - a.score);
+
+    // Si hay al menos una con score > 0, devolver las mejores
+    const withScore = scored.filter((item) => item.score > 0);
+    if (withScore.length > 0) {
+      return withScore.slice(0, maxItems);
+    }
+
+    // Si no hay coincidencias, no devolver nada
+    return [];
+  }
+
+  // Función para detectar si la pregunta es ambigua usando Groq
+  static async isQueryAmbiguous(userQuery, availableTopics) {
+    try {
+      const topicsList = availableTopics.join(", ");
+
+      const prompt = `Analiza si esta pregunta es CLARA o AMBIGUA: "${userQuery}"
+
+Temas disponibles: ${topicsList}
+
+Una pregunta es AMBIGUA si:
+- Es demasiado general o vaga
+- Podría referirse a múltiples cosas diferentes
+- Falta información crucial para responder
+
+Responde SOLO con:
+"clara" - si la pregunta es específica y clara
+"ambigua: [pregunta de aclaración]" - si es ambigua, seguido de UNA pregunta breve para aclarar
+
+Respuesta:`;
+
+      const groqResponse = await groqClient.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 100,
+        temperature: 0.3,
+      });
+
+      const responseText =
+        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
+
+      if (responseText.startsWith("ambigua:")) {
+        return {
+          isAmbiguous: true,
+          clarificationQuestion: responseText.replace("ambigua:", "").trim(),
+        };
+      }
+
+      return { isAmbiguous: false };
+    } catch (error) {
+      console.error("Error detectando ambigüedad con Groq:", error);
+      return { isAmbiguous: false }; // En caso de error, continuar normalmente
+    }
+  }
+
+  // Mantener compatibilidad
+  static findBestImages(images, searchText, maxImages = 3) {
+    return this.findBestMedia(images, searchText, maxImages);
+  }
+
   static async chatWithDocument({ chat }) {
     if (!chat || !Array.isArray(chat) || chat.length === 0) {
       return { error: "El chat debe ser un array no vacío" };
@@ -111,7 +403,7 @@ class AssistantService {
 
     try {
       const messages = chat;
-      const model = "command-a-03-2025";
+      const model = "llama-3.3-70b-versatile";
       const collection = process.env.COLLECTION_QT || "documentos";
 
       try {
@@ -162,36 +454,371 @@ class AssistantService {
           console.error(`Error buscando en ${collection}:`, e.message);
         }
 
+        // Obtener ubicaciones e imágenes activas para el contexto
+        const activeLocations = await this.getActiveLocations();
+        const activeImages = await this.getActivePromptImages();
+
+        // Agregar ubicaciones al contexto si existen
+        if (activeLocations.length > 0) {
+          const locationsText = activeLocations
+            .map(
+              (loc) =>
+                `Ubicación: ${loc.name}\nDescripción: ${loc.description}\nDirección: ${loc.address}`
+            )
+            .join("\n\n");
+
+          contextDocuments.push({
+            id: randomUUID(),
+            data: {
+              text: `UBICACIONES DISPONIBLES:\n\n${locationsText}\n\nNOTA: Si preguntan por ubicaciones, menciona que tienen sucursales y di algo como "Te envío la ubicación" o "Te paso la dirección". La ubicación GPS se enviará automáticamente. No incluyas coordenadas ni direcciones completas en tu mensaje.`,
+            },
+          });
+        }
+
+        // Agregar contenido multimedia (imágenes, audios, videos) al contexto si existen
+        if (activeImages.length > 0) {
+          const mediaByType = {
+            image: [],
+            audio: [],
+            video: [],
+          };
+
+          // Agrupar por tipo
+          activeImages.forEach((item) => {
+            const type = item.type || "image";
+            if (mediaByType[type]) {
+              mediaByType[type].push(item);
+            }
+          });
+
+          let mediaText = "";
+
+          if (mediaByType.image.length > 0) {
+            const imagesText = mediaByType.image
+              .map(
+                (img) => `Imagen: ${img.name}\nDescripción: ${img.description}`
+              )
+              .join("\n\n");
+            mediaText += `IMÁGENES DISPONIBLES:\n\n${imagesText}\n\n`;
+          }
+
+          if (mediaByType.audio.length > 0) {
+            const audiosText = mediaByType.audio
+              .map(
+                (audio) =>
+                  `Audio: ${audio.name}\nTranscripción: ${audio.description}`
+              )
+              .join("\n\n");
+            mediaText += `AUDIOS DISPONIBLES:\n\n${audiosText}\n\n`;
+          }
+
+          if (mediaByType.video.length > 0) {
+            const videosText = mediaByType.video
+              .map(
+                (video) =>
+                  `Video: ${video.name}\nDescripción: ${video.description}`
+              )
+              .join("\n\n");
+            mediaText += `VIDEOS DISPONIBLES:\n\n${videosText}\n\n`;
+          }
+
+          if (mediaText) {
+            contextDocuments.push({
+              id: randomUUID(),
+              data: {
+                text: `${mediaText}NOTA: Si hay contenido multimedia relevante, menciónalo naturalmente en tu respuesta. El sistema enviará automáticamente las imágenes, videos o audios. No incluyas URLs ni links.`,
+              },
+            });
+          }
+        }
+
         const normalizedMessages = messages.map((m) => ({
           role: m.role,
           content: extractTextFromMessage(m),
         }));
 
-        console.log(`Enviando ${normalizedMessages.length} mensajes a Cohere`);
-
-        let cohereResponse;
-
-        try {
-          cohereResponse = await cohereClient.chat({
-            model,
-            documents: contextDocuments,
-            messages: normalizedMessages,
-            maxTokens: 200,
-          });
-        } catch (error) {
-          console.error("Error en la llamada a Cohere:", error);
-          return { error: "Error al procesar el chat con Cohere" };
+        // Preparar contexto de documentos para Groq
+        let contextText = "";
+        if (contextDocuments.length > 0) {
+          contextText =
+            "\n\nCONTEXTO DISPONIBLE:\n" +
+            contextDocuments.map((doc) => doc.data.text).join("\n\n");
         }
 
-        const { message: responseMessage } = cohereResponse;
+        // Preparar mensajes para Groq
+        const groqMessages = [];
 
-        const cleanedResponse = formatForWhatsApp(
-          responseMessage.content[0].text
+        // Agregar contexto al primer mensaje del sistema si existe
+        if (
+          normalizedMessages.length > 0 &&
+          normalizedMessages[0].role === "system"
+        ) {
+          groqMessages.push({
+            role: "system",
+            content: normalizedMessages[0].content + contextText,
+          });
+          groqMessages.push(...normalizedMessages.slice(1));
+        } else {
+          // Si no hay mensaje de sistema, agregar el contexto al primer mensaje de usuario
+          if (normalizedMessages.length > 0) {
+            const firstMessage = normalizedMessages[0];
+            groqMessages.push({
+              role: firstMessage.role,
+              content: firstMessage.content + contextText,
+            });
+            groqMessages.push(...normalizedMessages.slice(1));
+          }
+        }
+
+        console.log(`Enviando ${groqMessages.length} mensajes a Groq`);
+
+        let groqResponse;
+
+        try {
+          groqResponse = await groqClient.chat.completions.create({
+            model,
+            messages: groqMessages,
+            max_tokens: 300,
+            temperature: 0.8,
+          });
+        } catch (error) {
+          console.error("Error en la llamada a Groq:", error);
+          return { error: "Error al procesar el chat con Groq" };
+        }
+
+        const responseText = groqResponse.choices[0]?.message?.content || "";
+        const cleanedResponse = formatForWhatsApp(responseText);
+
+        // Formato de respuesta compatible con el código existente
+        const responseMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: cleanedResponse }],
+        };
+
+        // Detectar si la respuesta indica envío de ubicación o imagen
+        const responseLower = cleanedResponse.toLowerCase();
+        const userText = getUnrespondedUserMessages(messages).toLowerCase();
+        const combinedText = `${userText} ${responseLower}`;
+
+        let locationToSend = null;
+        let imagesToSend = [];
+        let audiosToSend = [];
+        let videosToSend = [];
+        let shouldListLocations = false;
+
+        // Ahora decidir si enviar ubicación usando Groq si hay una seleccionada
+        if (locationToSend) {
+          const shouldSendLocation = await this.shouldSendMultimedia(
+            concatenatedUserText,
+            cleanedResponse,
+            "ubicación"
+          );
+
+          if (shouldSendLocation) {
+            console.log("✅ Groq decidió que SÍ debe enviar ubicación");
+          } else {
+            console.log("⛔ Groq decidió NO enviar ubicación");
+            locationToSend = null;
+          }
+        }
+
+        // BUSCAR ubicación SOLO basado en keywords del USUARIO y RESPUESTA
+        const locationKeywords = [
+          "ubicación",
+          "ubicacion",
+          "dirección",
+          "direccion",
+          "dónde",
+          "donde",
+          "llegar",
+          "llegue",
+          "cómo llegar",
+          "como llegar",
+        ];
+
+        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
+        const hasLocationKeyword = locationKeywords.some(
+          (keyword) =>
+            userText.includes(keyword) || responseLower.includes(keyword)
         );
-        responseMessage.content[0].text = cleanedResponse;
+
+        // Buscar ubicación SOLO SI GROQ DECIDE QUE ES NECESARIO
+        if (activeLocations.length > 0 && hasLocationKeyword) {
+          console.log(
+            "✅ Detectadas keywords de ubicación, enviando ubicación"
+          );
+          locationToSend = this.findBestLocation(activeLocations, combinedText);
+          console.log(
+            `📍 Ubicación seleccionada por similitud: ${
+              locationToSend?.name || "ninguna"
+            }`
+          );
+        }
+
+        // BUSCAR contenido multimedia SOLO basado en keywords del USUARIO y RESPUESTA
+        // (NO en el contenido de las descripciones/transcripciones)
+        const imageKeywords = [
+          "imagen",
+          "foto",
+          "ver",
+          "muestra",
+          "mostrar",
+          "enseña",
+          "enséña",
+          "mira",
+          "muestr",
+          "fotograf",
+        ];
+
+        const audioKeywords = [
+          "audio",
+          "escuchar",
+          "escucha",
+          "oír",
+          "oye",
+          "sonido",
+          "grabación",
+          "grabacion",
+        ];
+
+        const videoKeywords = [
+          "video",
+          "vídeo",
+          "clip",
+          "grabación",
+          "grabacion",
+        ];
+
+        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
+        const hasImageKeyword = imageKeywords.some(
+          (keyword) =>
+            userText.includes(keyword) || responseLower.includes(keyword)
+        );
+
+        const hasAudioKeyword = audioKeywords.some(
+          (keyword) =>
+            userText.includes(keyword) || responseLower.includes(keyword)
+        );
+
+        const hasVideoKeyword = videoKeywords.some(
+          (keyword) =>
+            userText.includes(keyword) || responseLower.includes(keyword)
+        );
+
+        // Buscar multimedia SOLO SI GROQ DECIDE QUE ES NECESARIO
+        if (activeImages.length > 0) {
+          // Separar contenido por tipo
+          const images = activeImages.filter(
+            (item) => (item.type || "image") === "image"
+          );
+          const audios = activeImages.filter((item) => item.type === "audio");
+          const videos = activeImages.filter((item) => item.type === "video");
+
+          // Primero, decidir si debe enviar cada tipo de multimedia
+          console.log("🤔 Analizando si debe enviar multimedia...");
+
+          // IMÁGENES: Decidir y filtrar
+          if (images.length > 0) {
+            const shouldSendImages = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "imágenes"
+            );
+
+            if (shouldSendImages) {
+              console.log("✅ Groq decidió que SÍ debe enviar imágenes");
+              imagesToSend = await this.filterMediaWithGroq(
+                images,
+                concatenatedUserText,
+                cleanedResponse,
+                "imágenes",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar imágenes");
+              imagesToSend = [];
+            }
+          }
+
+          // VIDEOS: Decidir y filtrar
+          if (videos.length > 0) {
+            const shouldSendVideos = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "videos"
+            );
+
+            if (shouldSendVideos) {
+              console.log("✅ Groq decidió que SÍ debe enviar videos");
+              videosToSend = await this.filterMediaWithGroq(
+                videos,
+                concatenatedUserText,
+                cleanedResponse,
+                "videos",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar videos");
+              videosToSend = [];
+            }
+          }
+
+          // AUDIOS: Decidir y filtrar
+          if (audios.length > 0) {
+            const shouldSendAudios = await this.shouldSendMultimedia(
+              concatenatedUserText,
+              cleanedResponse,
+              "audios"
+            );
+
+            if (shouldSendAudios) {
+              console.log("✅ Groq decidió que SÍ debe enviar audios");
+              audiosToSend = await this.filterMediaWithGroq(
+                audios,
+                concatenatedUserText,
+                cleanedResponse,
+                "audios",
+                3
+              );
+            } else {
+              console.log("⛔ Groq decidió NO enviar audios");
+              audiosToSend = [];
+            }
+          }
+        }
+
+        // Log de depuración
+        // if (locationToSend.length > 0) {
+        //   const shouldSendLocation = await this.shouldSendMultimedia(
+        //     concatenatedUserText,
+        //     cleanedResponse,
+        //     "ubicación"
+        //   );
+
+        //   if (shouldSendLocation) {
+        //     console.log("✅ Groq decidió que SÍ debe enviar ubicación");
+        //     // No usar filterMediaWithGroq para ubicación, ya que no es multimedia
+        //   } else {
+        //     console.log("⛔ Groq decidió NO enviar ubicación");
+        //     locationToSend = null;
+        //   }
+        // }
+        // if (locationToSend) {
+        //   console.log("📍 Location a enviar:", {
+        //     name: locationToSend.name,
+        //     latitude: locationToSend.latitude,
+        //     longitude: locationToSend.longitude,
+        //     address: locationToSend.address,
+        //   });
+        // }
 
         return {
           response: responseMessage,
+          locationToSend,
+          imagesToSend,
+          audiosToSend,
+          videosToSend,
+          shouldListLocations,
         };
       } catch (error) {
         console.error("Error en chat:", error);
