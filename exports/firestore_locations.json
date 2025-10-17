@@ -1,0 +1,57 @@
+{
+	"count": 4,
+	"items": [
+		{
+			"id": "7lK4RRPof8i2HRvElvHm",
+			"active": true,
+			"name": "Sucursal La paz",
+			"city": null,
+			"address": "Sucursal de La paz",
+			"description": "ubicacion de la central de La paz",
+			"latitude": -16.52826534972986,
+			"longitude": -67.82958984375,
+			"aliases": [],
+			"createdAt": "2025-10-16T15:09:32.463Z",
+			"updatedAt": "2025-10-16T15:09:32.463Z"
+		},
+		{
+			"id": "EcOeTapAexralZzwIhzy",
+			"active": true,
+			"name": "sucursal Cochabamba",
+			"city": null,
+			"address": "Casa de cocha",
+			"description": "Casa de la sucursal de cocha",
+			"latitude": -17.526590616547324,
+			"longitude": -65.67382810958802,
+			"aliases": [],
+			"createdAt": "2025-10-15T04:34:41.248Z",
+			"updatedAt": "2025-10-16T13:53:48.658Z"
+		},
+		{
+			"id": "LxAMmIqO5RqLCioPYZj8",
+			"active": true,
+			"name": "sucursal santa marta",
+			"city": null,
+			"address": "Sucursal de santa marta",
+			"description": "Nueva sucursal ",
+			"latitude": -16.481193100015407,
+			"longitude": -68.25123310089111,
+			"aliases": [],
+			"createdAt": "2025-10-15T03:34:19.881Z",
+			"updatedAt": "2025-10-16T13:53:37.358Z"
+		},
+		{
+			"id": "yheYqk8QMtrZDK9cK1XO",
+			"active": true,
+			"name": "sucursal santa cruz",
+			"city": null,
+			"address": "calle salvador 68",
+			"description": "ubicacion de la clinica en santa cruz",
+			"latitude": -17.7583296,
+			"longitude": -63.1981625,
+			"aliases": [],
+			"createdAt": "2025-10-16T13:53:04.991Z",
+			"updatedAt": "2025-10-16T13:53:04.991Z"
+		}
+	]
+}
