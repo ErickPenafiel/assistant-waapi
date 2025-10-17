@@ -1,884 +1,810 @@
 require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
+
 const { groqClient } = require("../config/clients/groq-client.js");
 const { qdrantClient } = require("../config/clients/qdrant-client.js");
-const { ChatHistoryService } = require("./chat-history-service.js");
 const { EmbeddingsService } = require("./embeddings-service.js");
 const { randomUUID } = require("crypto");
 const { db } = require("../config/firebase/config.js");
+
+/* -----------------------------------------
+   Constantes de colecciones y parámetros
+----------------------------------------- */
+const QT_DOCS_COLLECTION = process.env.COLLECTION_QT || "documentos";
+const QT_BRANCHES_COLLECTION =
+	process.env.COLLECTION_BRANCHES || "sucursales_media";
+const MODEL_CHAT = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+
+/* -----------------------------------------
+   Flags / singletons de preparación Qdrant
+----------------------------------------- */
+let __qdrantPrepared = false;
+let __qdrantDim = null;
+
+/* ------------------------------
+   Utilidades de texto y formato
+------------------------------ */
+function log(...args) {
+	// Log comprimido, agrega un prefijo para localizar fácil en Cloud logs
+	console.log("[AssistantService]", ...args);
+}
+function warn(...args) {
+	console.warn("[AssistantService][WARN]", ...args);
+}
+function errLog(...args) {
+	console.error("[AssistantService][ERROR]", ...args);
+}
+
 function formatForWhatsApp(text) {
-  if (!text) return text;
-  console.log("Texto original:", text);
-  console.log(typeof text);
-  // Limpiar headers de markdown (##, ###, etc.)
-  text = text.replace(/^#{1,6}\s+(.+)$/gm, "$1");
+	if (!text) return text;
 
-  // Convertir texto en negrita (**texto**) a mayúsculas o dejarlo sin formato
-  text = text.replace(/\*\*(.+?)\*\*/g, "$1"); // Quita los asteriscos
-  // O si prefieres mayúsculas: text = text.replace(/\*\*(.+?)\*\*/g, (match, p1) => p1.toUpperCase());
-
-  // Limpiar texto en cursiva (*texto*)
-  text = text.replace(/\*(.+?)\*/g, "$1");
-
-  // Limpiar listas con guiones o asteriscos al inicio
-  text = text.replace(/^[\s]*[-\*\+]\s+(.+)$/gm, "• $1");
-
-  // Limpiar listas numeradas
-  text = text.replace(/^[\s]*\d+\.\s+(.+)$/gm, "• $1");
-
-  // Limpiar bloques de código
-  text = text.replace(/```[\s\S]*?```/g, "");
-  text = text.replace(/`(.+?)`/g, "$1");
-
-  // Limpiar enlaces [texto](url)
-  text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
-
-  // Limpiar líneas horizontales
-  text = text.replace(/^[-\*_]{3,}$/gm, "");
-
-  // Limpiar espacios extra y saltos de línea múltiples
-  text = text.replace(/\n{3,}/g, "\n\n");
-  text = text.trim();
-
-  return text;
+	text = text.replace(/^#{1,6}\s+(.+)$/gm, "$1");
+	text = text.replace(/\*\*(.+?)\*\*/g, "$1");
+	text = text.replace(/\*(.+?)\*/g, "$1");
+	text = text.replace(/^[\s]*[-\*\+]\s+(.+)$/gm, "• $1");
+	text = text.replace(/^[\s]*\d+\.\s+(.+)$/gm, "• $1");
+	text = text.replace(/```[\s\S]*?```/g, "");
+	text = text.replace(/`(.+?)`/g, "$1");
+	text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+	text = text.replace(/^[-\*_]{3,}$/gm, "");
+	text = text.replace(/\n{3,}/g, "\n\n");
+	return text.trim();
 }
 
-// Función para extraer texto de un mensaje
 function extractTextFromMessage(message) {
-  if (typeof message.content === "string") {
-    return message.content;
-  }
-
-  if (Array.isArray(message.content)) {
-    return message.content
-      .map((c) => (c.type === "text" ? c.text : ""))
-      .filter((text) => text && text.trim() !== "")
-      .join("\n");
-  }
-
-  if (
-    typeof message.content === "object" &&
-    message.content !== null &&
-    "text" in message.content
-  ) {
-    return message.content.text || "";
-  }
-
-  return "";
+	if (typeof message.content === "string") return message.content;
+	if (Array.isArray(message.content)) {
+		return message.content
+			.map((c) => (c.type === "text" ? c.text : ""))
+			.filter((t) => t.trim() !== "")
+			.join("\n");
+	}
+	if (message?.content?.text) return message.content.text;
+	return "";
 }
 
-// Función para concatenar mensajes de usuario sin responder
 function getUnrespondedUserMessages(messages) {
-  let lastAssistantIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") {
-      lastAssistantIndex = i;
-      break;
-    }
-  }
-
-  if (lastAssistantIndex === -1) {
-    const userMessages = messages.filter((m) => m.role === "user");
-    if (userMessages.length === 0) return "";
-
-    const lastUserMessage = userMessages[userMessages.length - 1];
-    return extractTextFromMessage(lastUserMessage);
-  }
-
-  const unrespondedMessages = messages
-    .slice(lastAssistantIndex + 1)
-    .filter((m) => m.role === "user")
-    .map(extractTextFromMessage)
-    .filter((text) => text.trim() !== "");
-
-  if (unrespondedMessages.length === 0) {
-    return "";
-  }
-
-  if (unrespondedMessages.length > 1) {
-    return unrespondedMessages
-      .map((msg, index) => `Mensaje ${index + 1}: ${msg}`)
-      .join("\n\n");
-  }
-
-  return unrespondedMessages[0];
+	let lastAssistant = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "assistant") {
+			lastAssistant = i;
+			break;
+		}
+	}
+	const userMessages =
+		lastAssistant === -1 ? messages : messages.slice(lastAssistant + 1);
+	const unresp = userMessages
+		.filter((m) => m.role === "user")
+		.map(extractTextFromMessage)
+		.filter((t) => t.trim() !== "");
+	return unresp.join("\n\n");
 }
 
-class AssistantService {
-  static async getActiveLocations() {
-    try {
-      const locationsRef = db.collection("locations");
-      const snapshot = await locationsRef.where("active", "==", true).get();
+/* ------------------------------
+      Helpers de similitud
+------------------------------ */
+const TextSim = {
+	normalize(s = "") {
+		return s
+			.toLowerCase()
+			.normalize("NFD")
+			.replace(/\p{Diacritic}/gu, "")
+			.replace(/[^\p{L}\p{N}\s]/gu, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+	},
 
-      return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-    } catch (error) {
-      console.error("Error getting active locations:", error);
-      return [];
-    }
-  }
+	tokenize(s) {
+		const stop = new Set([
+			"de",
+			"la",
+			"el",
+			"los",
+			"las",
+			"y",
+			"o",
+			"u",
+			"en",
+			"a",
+			"un",
+			"una",
+			"para",
+			"por",
+			"con",
+			"del",
+			"al",
+			"que",
+			"como",
+			"es",
+			"son",
+			"lo",
+			"su",
+			"sus",
+			"tu",
+			"mi",
+			"te",
+			"le",
+			"se",
+		]);
+		return this.normalize(s)
+			.split(" ")
+			.filter((w) => w.length > 2 && !stop.has(w));
+	},
 
-  // Función para calcular similitud entre textos
-  static calculateSimilarity(text1, text2) {
-    const words1 = text1
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 2);
-    const words2 = text2
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 2);
+	jaccard(a, b) {
+		const A = new Set(this.tokenize(a));
+		const B = new Set(this.tokenize(b));
+		if (!A.size || !B.size) return 0;
+		let inter = 0;
+		for (const w of A) if (B.has(w)) inter++;
+		return inter / (A.size + B.size - inter);
+	},
+};
 
-    let matches = 0;
-    words1.forEach((word) => {
-      if (words2.some((w) => w.includes(word) || word.includes(w))) {
-        matches++;
-      }
-    });
+/* ------------------------------
+   Preparación de Qdrant (colección + índices)
+------------------------------ */
+async function ensureQdrantPrepared() {
+	if (__qdrantPrepared) return { dim: __qdrantDim };
 
-    return matches;
-  }
+	log("Preparando Qdrant… (colección e índices)");
+	// 1) Detectar dimensión de embedding
+	const probe = await EmbeddingsService.getEmbeddingOrCachedResponse({
+		text: "dimension-probe",
+	});
+	if (!probe?.embedding?.length) {
+		throw new Error("EmbeddingsService devolvió un embedding inválido");
+	}
+	__qdrantDim = probe.embedding.length;
 
-  // Función para encontrar la mejor ubicación
-  static findBestLocation(locations, searchText) {
-    let bestMatch = null;
-    let bestScore = 0;
+	// 2) Asegurar colección
+	try {
+		await qdrantClient.getCollection(QT_BRANCHES_COLLECTION);
+		log(`Colección "${QT_BRANCHES_COLLECTION}" ya existe`);
+	} catch {
+		log(`Colección "${QT_BRANCHES_COLLECTION}" no existe. Creando…`);
+		await qdrantClient.createCollection(QT_BRANCHES_COLLECTION, {
+			vectors: { size: __qdrantDim, distance: "Cosine" },
+			optimizers_config: { default_segment_number: 2 },
+		});
+		log(`Colección "${QT_BRANCHES_COLLECTION}" creada`);
+	}
 
-    locations.forEach((location) => {
-      const locationText = `${location.name} ${location.description} ${location.address}`;
-      const score = this.calculateSimilarity(searchText, locationText);
+	// 3) Asegurar índices de payload requeridos para filtros keyword/bool
+	const ensureIndex = async (field, fieldType) => {
+		try {
+			await qdrantClient.createPayloadIndex(QT_BRANCHES_COLLECTION, {
+				field_name: field,
+				field_schema: { type: fieldType }, // "keyword" | "bool" | "float" | "integer"
+			});
+			log(`Índice creado para "${field}" (${fieldType})`);
+		} catch (e) {
+			// Si ya existe, Qdrant devuelve 409; lo ignoramos
+			const code = e?.status || e?.response?.status;
+			if (code === 409) {
+				log(`Índice ya existía para "${field}"`);
+			} else {
+				warn(
+					`No se pudo crear índice para "${field}":`,
+					e?.data || e?.message || e
+				);
+			}
+		}
+	};
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = location;
-      }
-    });
+	await ensureIndex("type", "keyword");
+	await ensureIndex("active", "bool");
+	await ensureIndex("city", "keyword");
+	await ensureIndex("branch", "keyword");
 
-    // Si no hay coincidencia, devolver la primera ubicación activa
-    return bestMatch || locations[0] || null;
-  }
+	__qdrantPrepared = true;
+	return { dim: __qdrantDim };
+}
 
-  static async getActivePromptImages() {
-    try {
-      const imagesRef = db.collection("prompt_images");
-      const snapshot = await imagesRef.where("active", "==", true).get();
+/* ------------------------------
+      Búsquedas en Qdrant
+------------------------------ */
+async function qdrantSearchDocuments(embedding, limit = 8) {
+	try {
+		const results = await qdrantClient.search(QT_DOCS_COLLECTION, {
+			vector: embedding,
+			limit,
+			with_payload: true,
+		});
+		return results.map((r) => ({
+			id: randomUUID(),
+			data: {
+				text:
+					r.payload?.contenido ||
+					r.payload?.descripcion ||
+					r.payload?.text ||
+					"",
+			},
+		}));
+	} catch (err) {
+		warn("Qdrant search (documentos) error:", err?.data || err?.message || err);
+		return [];
+	}
+}
 
-      return snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-    } catch (error) {
-      console.error("Error getting active prompt media:", error);
-      return [];
-    }
-  }
+async function qdrantResolveBranchByQuery(userQuery) {
+	try {
+		await ensureQdrantPrepared();
 
-  // Función NUEVA: Decidir si debe enviar multimedia usando Groq
-  static async shouldSendMultimedia(userQuery, assistantResponse, mediaType) {
-    try {
-      const prompt = `Analiza esta conversación:
+		const { embedding } = await EmbeddingsService.getEmbeddingOrCachedResponse({
+			text: userQuery,
+		});
 
+		const filter = {
+			must: [
+				{ key: "type", match: { value: "location" } },
+				{ key: "active", match: { value: true } },
+			],
+		};
+
+		log("Qdrant resolveBranch query:", {
+			collection: QT_BRANCHES_COLLECTION,
+			score_threshold: 0.25,
+			filter,
+		});
+
+		const results = await qdrantClient.search(QT_BRANCHES_COLLECTION, {
+			vector: embedding,
+			limit: 5,
+			with_payload: true,
+			filter,
+			score_threshold: 0.25,
+		});
+
+		log("Qdrant resolveBranch hits:", results?.length || 0);
+
+		if (!results?.length) return null;
+
+		const top = results[0];
+		const p = top.payload || {};
+		return {
+			name: p.name || p.branch || "Sucursal",
+			address: p.address || "",
+			description: p.description || "",
+			city: p.city || "",
+			latitude: p.latitude || null,
+			longitude: p.longitude || null,
+			active: p.active !== false,
+		};
+	} catch (err) {
+		warn("Qdrant resolve branch error:", err?.data || err?.message || err);
+		return null;
+	}
+}
+
+async function qdrantListAllBranches() {
+	try {
+		await ensureQdrantPrepared();
+
+		if (!qdrantClient.scroll)
+			throw new Error("scroll no disponible en cliente");
+		let nextPage = null;
+		const all = [];
+		do {
+			const res = await qdrantClient.scroll(QT_BRANCHES_COLLECTION, {
+				with_payload: true,
+				limit: 128,
+				filter: {
+					must: [
+						{ key: "type", match: { value: "location" } },
+						{ key: "active", match: { value: true } },
+					],
+				},
+				offset: nextPage || undefined,
+			});
+			const points = res?.points || [];
+			all.push(
+				...points.map((pt) => ({
+					name: pt.payload?.name || pt.payload?.branch || "Sucursal",
+					city: pt.payload?.city || "",
+					address: pt.payload?.address || "",
+					description: pt.payload?.description || "",
+					latitude: pt.payload?.latitude || null,
+					longitude: pt.payload?.longitude || null,
+					active: pt.payload?.active !== false,
+				}))
+			);
+			nextPage = res?.next_page_offset || null;
+		} while (nextPage);
+		log("Qdrant listAllBranches total:", all.length);
+		return all;
+	} catch (err) {
+		warn("Qdrant scroll fallback to Firebase. Error:", err?.message || err);
+		return null;
+	}
+}
+
+async function qdrantSearchMedia({
+	userQuery,
+	branchName,
+	city,
+	type, // "image" | "video" | "audio"
+	limit = 3,
+}) {
+	const filtersMust = [
+		{ key: "type", match: { value: type } },
+		{ key: "active", match: { value: true } },
+	];
+
+	// Añade filtros solo si hay valores; si city/branch están vacíos, no forzamos índice
+	if (branchName)
+		filtersMust.push({ key: "branch", match: { value: branchName } });
+	if (city) filtersMust.push({ key: "city", match: { value: city } });
+
+	const filter = { must: filtersMust };
+
+	try {
+		await ensureQdrantPrepared();
+
+		const { embedding } = await EmbeddingsService.getEmbeddingOrCachedResponse({
+			text: userQuery,
+		});
+
+		log("Qdrant search media params:", {
+			collection: QT_BRANCHES_COLLECTION,
+			type,
+			branchName,
+			city,
+			limit,
+			filter,
+			score_threshold: 0.2,
+		});
+
+		const results = await qdrantClient.search(QT_BRANCHES_COLLECTION, {
+			vector: embedding,
+			limit,
+			with_payload: true,
+			filter,
+			score_threshold: 0.2,
+		});
+
+		log("Qdrant search media hits:", results?.length || 0);
+
+		return (results || []).map((r) => {
+			const p = r.payload || {};
+			return {
+				id: r.id,
+				name: p.name || "",
+				description: p.description || "",
+				url: p.url || p.imageUrl || "",
+				type: p.type || type,
+				branch: p.branch || branchName || "",
+				city: p.city || city || "",
+				score: r.score,
+			};
+		});
+	} catch (e) {
+		// Errores comunes: falta de índices → los creamos y reintentamos una vez sin filtros estrictos
+		const emsg = e?.data || e?.message || e;
+		errLog("Qdrant search media error:", emsg);
+
+		const needIndex =
+			typeof emsg === "string"
+				? /Index required|Bad request: Index required/i.test(emsg)
+				: /Index required|Bad request: Index required/i.test(
+						JSON.stringify(emsg || {})
+				  );
+
+		if (needIndex) {
+			warn("Faltaba índice. Reintentando tras ensureQdrantPrepared()…");
+			try {
+				await ensureQdrantPrepared();
+				// Relajar filtros si faltan branch/city
+				const relaxedFilter = {
+					must: [
+						{ key: "type", match: { value: type } },
+						{ key: "active", match: { value: true } },
+					],
+				};
+				log("Reintento Qdrant (relaxed filter):", relaxedFilter);
+				const { embedding } =
+					await EmbeddingsService.getEmbeddingOrCachedResponse({
+						text: userQuery,
+					});
+				const retry = await qdrantClient.search(QT_BRANCHES_COLLECTION, {
+					vector: embedding,
+					limit,
+					with_payload: true,
+					filter: relaxedFilter,
+					score_threshold: 0.2,
+				});
+				log("Reintento hits:", retry?.length || 0);
+				return (retry || []).map((r) => {
+					const p = r.payload || {};
+					return {
+						id: r.id,
+						name: p.name || "",
+						description: p.description || "",
+						url: p.url || p.imageUrl || "",
+						type: p.type || type,
+						branch: p.branch || "",
+						city: p.city || "",
+						score: r.score,
+					};
+				});
+			} catch (e2) {
+				errLog("Reintento Qdrant falló:", e2?.data || e2?.message || e2);
+			}
+		}
+
+		return [];
+	}
+}
+
+/* ------------------------------------
+   Fallbacks a Firebase (respaldo)
+------------------------------------ */
+async function fbGetActiveLocations() {
+	try {
+		const snap = await db
+			.collection("locations")
+			.where("active", "==", true)
+			.get();
+		const docs = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+		log("Firebase getActiveLocations count:", docs.length);
+		return docs;
+	} catch (err) {
+		errLog("Firebase getActiveLocations error:", err?.message || err);
+		return [];
+	}
+}
+
+async function fbGetActivePromptImages() {
+	try {
+		const snap = await db
+			.collection("prompt_images")
+			.where("active", "==", true)
+			.get();
+		const docs = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+		log("Firebase getActivePromptImages count:", docs.length);
+		return docs;
+	} catch (err) {
+		errLog("Firebase getActivePromptImages error:", err?.message || err);
+		return [];
+	}
+}
+
+/* ------------------------------
+      INTENT DETECTION (GROQ)
+------------------------------ */
+async function decideUserIntent(userText, assistantText = "") {
+	const schema = `Devuelve SOLO este JSON:
+{"intent":"list_branches"|"request_location"|"request_images"|"request_videos"|"request_audios"|"none","branch_mentioned":string|null,"explicit":boolean,"reason":string}
+Reglas:
+- "explicit" solo si el usuario pide ver/enviar/mostrar algo (muéstrame, envíame, pásame ubicación, quiero ver, etc.)
+- "¿Qué sucursales tienes?" -> list_branches
+- "¿Dónde queda la sucursal X?" -> request_location
+- "Muéstrame fotos de X" -> request_images`;
+
+	const prompt = `${schema}\n\nUsuario: "${userText}"\nAsistente: "${assistantText}"\n\nJSON:`;
+	try {
+		const res = await groqClient.chat.completions.create({
+			model: MODEL_CHAT,
+			messages: [{ role: "user", content: prompt }],
+			max_tokens: 120,
+			temperature: 0.0,
+		});
+		const out = res.choices?.[0]?.message?.content?.trim() || "{}";
+		log("decideUserIntent raw:", out);
+		return JSON.parse(out);
+	} catch (err) {
+		errLog("decideUserIntent error:", err?.message || err);
+		return {
+			intent: "none",
+			branch_mentioned: null,
+			explicit: false,
+			reason: "error",
+		};
+	}
+}
+
+async function shouldSendMultimedia(userQuery, assistantResponse, mediaType) {
+	const prompt = `Analiza esta conversación:
 Usuario: "${userQuery}"
 Asistente: "${assistantResponse}"
-
-¿El usuario está pidiendo EXPLÍCITAMENTE ver ${mediaType} o necesita contenido visual/multimedia para entender mejor?
-
-Responde SOLO:
-- "si" - si el usuario pide ver, mostrar, enviar ${mediaType}
-- "no" - si solo pregunta información, ubicación, direcciones, horarios, o cualquier cosa que NO requiera ${mediaType}
-
-Ejemplos de NO enviar:
-- "¿Cómo llego a la sucursal?" → no
-- "¿Dónde está ubicado?" → no
-- "¿Cuánto cuesta?" → no
-- "¿Qué horarios tienen?" → no
-
-Ejemplos de SI enviar:
-- "Muéstrame fotos de los masajes" → si
-- "Quiero ver imágenes" → si
-- "¿Cómo es el lugar?" → si
-
-Respuesta:`;
-
-      const groqResponse = await groqClient.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 10,
-        temperature: 0.1,
-      });
-
-      const responseText =
-        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
-
-      return responseText.includes("si") || responseText.includes("sí");
-    } catch (error) {
-      console.error("Error decidiendo si enviar multimedia:", error);
-      return false; // Por defecto NO enviar si hay error
-    }
-  }
-
-  // Función para usar Groq para filtrar contenido multimedia relevante
-  static async filterMediaWithGroq(
-    mediaItems,
-    userQuery,
-    assistantResponse,
-    mediaType,
-    maxItems = 3
-  ) {
-    if (!mediaItems || mediaItems.length === 0) {
-      return [];
-    }
-
-    try {
-      // Pre-filtrar para items con similitud alta
-      const queryLower = userQuery.toLowerCase();
-      const words = queryLower.split(/\s+/).filter((word) => word.length > 2);
-      const mainTerm = words.slice(-2).join(" "); // Últimas 2 palabras como término principal
-      const preFilteredItems = mediaItems.filter((item) => {
-        const itemText = `${item.name} ${item.description}`;
-        const similarity = this.calculateSimilarity(userQuery, itemText);
-        return similarity > 2; // Umbral de similitud para incluir
-      });
-
-      if (preFilteredItems.length === 0) {
-        console.log(
-          `⛔ No hay ${mediaType} con similitud suficiente para "${userQuery}"`
-        );
-        return [];
-      }
-
-      console.log(
-        `🔍 Pre-filtrados ${preFilteredItems.length} ${mediaType} relevantes para "${userQuery}" (término principal: "${mainTerm}")`
-      );
-      console.log(
-        `📋 Items pre-filtrados:`,
-        preFilteredItems.map((item) => `${item.name} - ${item.description}`)
-      );
-
-      // Crear lista de opciones para Groq con los pre-filtrados
-      const mediaList = preFilteredItems
-        .map(
-          (item, index) => `${index + 1}. ${item.name} - ${item.description}`
-        )
-        .join("\n");
-
-      const prompt = `Usuario pregunta: "${userQuery}"
-
-${mediaType} relevantes (ya filtrados por similitud):
-${mediaList}
-
-INSTRUCCIONES ESTRICTAS:
-1. Solo selecciona ${mediaType} que sean DIRECTAMENTE relevantes a lo que el usuario pregunta
-2. Si pregunta por una sucursal específica (ej: "Santa Marta"), NO envíes imágenes de otras sucursales
-3. Si pregunta cómo llegar o ubicación, responde "ninguno"
-4. Si pregunta información general sin pedir ver contenido, responde "ninguno"
-5. Solo envía si el usuario explícitamente quiere VER algo o si el contenido ayuda a responder su pregunta
-
-Selecciona hasta ${maxItems} ${mediaType} que sean REALMENTE necesarios. Si ninguno es relevante, responde "ninguno".
-
-Responde SOLO con números separados por comas (ej: 1,3) o "ninguno":`;
-
-      const groqResponse = await groqClient.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 50,
-        temperature: 0.5,
-      });
-
-      const responseText =
-        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
-
-      // Si la respuesta es "ninguno" o vacía, no enviar nada
-      if (
-        responseText === "ninguno" ||
-        responseText === "ninguna" ||
-        !responseText
-      ) {
-        return [];
-      }
-
-      // Extraer números de la respuesta
-      const selectedIndexes =
-        responseText
-          .match(/\d+/g)
-          ?.map((num) => parseInt(num) - 1)
-          .filter((idx) => idx >= 0 && idx < preFilteredItems.length) || [];
-
-      if (selectedIndexes.length === 0) {
-        console.log(`⛔ No se encontraron ${mediaType} relevantes`);
-        return [];
-      }
-
-      // Devolver los items seleccionados
-      const selected = selectedIndexes
-        .slice(0, maxItems)
-        .map((idx) => preFilteredItems[idx]);
-      console.log(
-        `✅ Groq seleccionó ${selected.length} ${mediaType}:`,
-        selected.map((s) => s.name)
-      );
-      return selected;
-    } catch (error) {
-      console.error("Error filtrando multimedia con Groq:", error);
-      // Fallback al método anterior si falla Groq
-      return this.findBestMedia(mediaItems, userQuery, maxItems);
-    }
-  }
-
-  // Función para encontrar el mejor contenido multimedia (imágenes, audios, videos) - FALLBACK
-  static findBestMedia(mediaItems, searchText, maxItems = 3) {
-    const scored = mediaItems.map((item) => {
-      const itemText = `${item.name} ${item.description}`;
-      const score = this.calculateSimilarity(searchText, itemText);
-      return { ...item, score };
-    });
-
-    // Ordenar por score descendente
-    scored.sort((a, b) => b.score - a.score);
-
-    // Si hay al menos una con score > 0, devolver las mejores
-    const withScore = scored.filter((item) => item.score > 0);
-    if (withScore.length > 0) {
-      return withScore.slice(0, maxItems);
-    }
-
-    // Si no hay coincidencias, no devolver nada
-    return [];
-  }
-
-  // Función para detectar si la pregunta es ambigua usando Groq
-  static async isQueryAmbiguous(userQuery, availableTopics) {
-    try {
-      const topicsList = availableTopics.join(", ");
-
-      const prompt = `Analiza si esta pregunta es CLARA o AMBIGUA: "${userQuery}"
-
-Temas disponibles: ${topicsList}
-
-Una pregunta es AMBIGUA si:
-- Es demasiado general o vaga
-- Podría referirse a múltiples cosas diferentes
-- Falta información crucial para responder
-
-Responde SOLO con:
-"clara" - si la pregunta es específica y clara
-"ambigua: [pregunta de aclaración]" - si es ambigua, seguido de UNA pregunta breve para aclarar
-
-Respuesta:`;
-
-      const groqResponse = await groqClient.chat.completions.create({
-        model: "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 100,
-        temperature: 0.3,
-      });
-
-      const responseText =
-        groqResponse.choices[0]?.message?.content?.trim().toLowerCase() || "";
-
-      if (responseText.startsWith("ambigua:")) {
-        return {
-          isAmbiguous: true,
-          clarificationQuestion: responseText.replace("ambigua:", "").trim(),
-        };
-      }
-
-      return { isAmbiguous: false };
-    } catch (error) {
-      console.error("Error detectando ambigüedad con Groq:", error);
-      return { isAmbiguous: false }; // En caso de error, continuar normalmente
-    }
-  }
-
-  // Mantener compatibilidad
-  static findBestImages(images, searchText, maxImages = 3) {
-    return this.findBestMedia(images, searchText, maxImages);
-  }
-
-  static async chatWithDocument({ chat }) {
-    if (!chat || !Array.isArray(chat) || chat.length === 0) {
-      return { error: "El chat debe ser un array no vacío" };
-    }
-
-    try {
-      const messages = chat;
-      const model = "llama-3.3-70b-versatile";
-      const collection = process.env.COLLECTION_QT || "documentos";
-
-      try {
-        // USAR CONCATENACIÓN EN LUGAR DEL ÚLTIMO MENSAJE
-        const concatenatedUserText = getUnrespondedUserMessages(messages);
-
-        if (!concatenatedUserText) {
-          return {
-            error: "No se encontraron mensajes del usuario sin responder",
-          };
-        }
-
-        console.log("Texto concatenado para procesar:", concatenatedUserText);
-
-        const { embedding, response, hash } =
-          await EmbeddingsService.getEmbeddingOrCachedResponse({
-            text: concatenatedUserText,
-          });
-
-        if (!embedding) {
-          return {
-            error: "No se pudo obtener el embedding del texto",
-          };
-        }
-
-        let contextDocuments = [];
-        try {
-          const searchResults = await qdrantClient.search(collection, {
-            vector: embedding,
-            limit: 10,
-            with_payload: true,
-          });
-          contextDocuments = searchResults.map((item) => ({
-            id: randomUUID(),
-            data: {
-              text:
-                item.payload?.contenido ||
-                item.payload?.descripcion ||
-                item.payload?.text ||
-                "Sin contenido",
-            },
-          }));
-
-          console.log(
-            `Encontrados ${contextDocuments.length} documentos de contexto`
-          );
-        } catch (e) {
-          console.error(`Error buscando en ${collection}:`, e.message);
-        }
-
-        // Obtener ubicaciones e imágenes activas para el contexto
-        const activeLocations = await this.getActiveLocations();
-        const activeImages = await this.getActivePromptImages();
-
-        // Agregar ubicaciones al contexto si existen
-        if (activeLocations.length > 0) {
-          const locationsText = activeLocations
-            .map(
-              (loc) =>
-                `Ubicación: ${loc.name}\nDescripción: ${loc.description}\nDirección: ${loc.address}`
-            )
-            .join("\n\n");
-
-          contextDocuments.push({
-            id: randomUUID(),
-            data: {
-              text: `UBICACIONES DISPONIBLES:\n\n${locationsText}\n\nNOTA: Si preguntan por ubicaciones, menciona que tienen sucursales y di algo como "Te envío la ubicación" o "Te paso la dirección". La ubicación GPS se enviará automáticamente. No incluyas coordenadas ni direcciones completas en tu mensaje.`,
-            },
-          });
-        }
-
-        // Agregar contenido multimedia (imágenes, audios, videos) al contexto si existen
-        if (activeImages.length > 0) {
-          const mediaByType = {
-            image: [],
-            audio: [],
-            video: [],
-          };
-
-          // Agrupar por tipo
-          activeImages.forEach((item) => {
-            const type = item.type || "image";
-            if (mediaByType[type]) {
-              mediaByType[type].push(item);
-            }
-          });
-
-          let mediaText = "";
-
-          if (mediaByType.image.length > 0) {
-            const imagesText = mediaByType.image
-              .map(
-                (img) => `Imagen: ${img.name}\nDescripción: ${img.description}`
-              )
-              .join("\n\n");
-            mediaText += `IMÁGENES DISPONIBLES:\n\n${imagesText}\n\n`;
-          }
-
-          if (mediaByType.audio.length > 0) {
-            const audiosText = mediaByType.audio
-              .map(
-                (audio) =>
-                  `Audio: ${audio.name}\nTranscripción: ${audio.description}`
-              )
-              .join("\n\n");
-            mediaText += `AUDIOS DISPONIBLES:\n\n${audiosText}\n\n`;
-          }
-
-          if (mediaByType.video.length > 0) {
-            const videosText = mediaByType.video
-              .map(
-                (video) =>
-                  `Video: ${video.name}\nDescripción: ${video.description}`
-              )
-              .join("\n\n");
-            mediaText += `VIDEOS DISPONIBLES:\n\n${videosText}\n\n`;
-          }
-
-          if (mediaText) {
-            contextDocuments.push({
-              id: randomUUID(),
-              data: {
-                text: `${mediaText}NOTA: Si hay contenido multimedia relevante, menciónalo naturalmente en tu respuesta. El sistema enviará automáticamente las imágenes, videos o audios. No incluyas URLs ni links.`,
-              },
-            });
-          }
-        }
-
-        const normalizedMessages = messages.map((m) => ({
-          role: m.role,
-          content: extractTextFromMessage(m),
-        }));
-
-        // Preparar contexto de documentos para Groq
-        let contextText = "";
-        if (contextDocuments.length > 0) {
-          contextText =
-            "\n\nCONTEXTO DISPONIBLE:\n" +
-            contextDocuments.map((doc) => doc.data.text).join("\n\n");
-        }
-
-        // Preparar mensajes para Groq
-        const groqMessages = [];
-
-        // Agregar contexto al primer mensaje del sistema si existe
-        if (
-          normalizedMessages.length > 0 &&
-          normalizedMessages[0].role === "system"
-        ) {
-          groqMessages.push({
-            role: "system",
-            content: normalizedMessages[0].content + contextText,
-          });
-          groqMessages.push(...normalizedMessages.slice(1));
-        } else {
-          // Si no hay mensaje de sistema, agregar el contexto al primer mensaje de usuario
-          if (normalizedMessages.length > 0) {
-            const firstMessage = normalizedMessages[0];
-            groqMessages.push({
-              role: firstMessage.role,
-              content: firstMessage.content + contextText,
-            });
-            groqMessages.push(...normalizedMessages.slice(1));
-          }
-        }
-
-        console.log(`Enviando ${groqMessages.length} mensajes a Groq`);
-
-        let groqResponse;
-
-        try {
-          groqResponse = await groqClient.chat.completions.create({
-            model,
-            messages: groqMessages,
-            max_tokens: 300,
-            temperature: 0.8,
-          });
-        } catch (error) {
-          console.error("Error en la llamada a Groq:", error);
-          return { error: "Error al procesar el chat con Groq" };
-        }
-
-        const responseText = groqResponse.choices[0]?.message?.content || "";
-        const cleanedResponse = formatForWhatsApp(responseText);
-
-        // Formato de respuesta compatible con el código existente
-        const responseMessage = {
-          role: "assistant",
-          content: [{ type: "text", text: cleanedResponse }],
-        };
-
-        // Detectar si la respuesta indica envío de ubicación o imagen
-        const responseLower = cleanedResponse.toLowerCase();
-        const userText = getUnrespondedUserMessages(messages).toLowerCase();
-        const combinedText = `${userText} ${responseLower}`;
-
-        let locationToSend = null;
-        let imagesToSend = [];
-        let audiosToSend = [];
-        let videosToSend = [];
-        let shouldListLocations = false;
-
-        // Ahora decidir si enviar ubicación usando Groq si hay una seleccionada
-        if (locationToSend) {
-          const shouldSendLocation = await this.shouldSendMultimedia(
-            concatenatedUserText,
-            cleanedResponse,
-            "ubicación"
-          );
-
-          if (shouldSendLocation) {
-            console.log("✅ Groq decidió que SÍ debe enviar ubicación");
-          } else {
-            console.log("⛔ Groq decidió NO enviar ubicación");
-            locationToSend = null;
-          }
-        }
-
-        // BUSCAR ubicación SOLO basado en keywords del USUARIO y RESPUESTA
-        const locationKeywords = [
-          "ubicación",
-          "ubicacion",
-          "dirección",
-          "direccion",
-          "dónde",
-          "donde",
-          "llegar",
-          "llegue",
-          "cómo llegar",
-          "como llegar",
-        ];
-
-        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
-        const hasLocationKeyword = locationKeywords.some(
-          (keyword) =>
-            userText.includes(keyword) || responseLower.includes(keyword)
-        );
-
-        // Buscar ubicación SOLO SI GROQ DECIDE QUE ES NECESARIO
-        if (activeLocations.length > 0 && hasLocationKeyword) {
-          console.log(
-            "✅ Detectadas keywords de ubicación, enviando ubicación"
-          );
-          locationToSend = this.findBestLocation(activeLocations, combinedText);
-          console.log(
-            `📍 Ubicación seleccionada por similitud: ${
-              locationToSend?.name || "ninguna"
-            }`
-          );
-        }
-
-        // BUSCAR contenido multimedia SOLO basado en keywords del USUARIO y RESPUESTA
-        // (NO en el contenido de las descripciones/transcripciones)
-        const imageKeywords = [
-          "imagen",
-          "foto",
-          "ver",
-          "muestra",
-          "mostrar",
-          "enseña",
-          "enséña",
-          "mira",
-          "muestr",
-          "fotograf",
-        ];
-
-        const audioKeywords = [
-          "audio",
-          "escuchar",
-          "escucha",
-          "oír",
-          "oye",
-          "sonido",
-          "grabación",
-          "grabacion",
-        ];
-
-        const videoKeywords = [
-          "video",
-          "vídeo",
-          "clip",
-          "grabación",
-          "grabacion",
-        ];
-
-        // Verificar keywords SOLO en userText y responseLower (no en combinedText)
-        const hasImageKeyword = imageKeywords.some(
-          (keyword) =>
-            userText.includes(keyword) || responseLower.includes(keyword)
-        );
-
-        const hasAudioKeyword = audioKeywords.some(
-          (keyword) =>
-            userText.includes(keyword) || responseLower.includes(keyword)
-        );
-
-        const hasVideoKeyword = videoKeywords.some(
-          (keyword) =>
-            userText.includes(keyword) || responseLower.includes(keyword)
-        );
-
-        // Buscar multimedia SOLO SI GROQ DECIDE QUE ES NECESARIO
-        if (activeImages.length > 0) {
-          // Separar contenido por tipo
-          const images = activeImages.filter(
-            (item) => (item.type || "image") === "image"
-          );
-          const audios = activeImages.filter((item) => item.type === "audio");
-          const videos = activeImages.filter((item) => item.type === "video");
-
-          // Primero, decidir si debe enviar cada tipo de multimedia
-          console.log("🤔 Analizando si debe enviar multimedia...");
-
-          // IMÁGENES: Decidir y filtrar
-          if (images.length > 0) {
-            const shouldSendImages = await this.shouldSendMultimedia(
-              concatenatedUserText,
-              cleanedResponse,
-              "imágenes"
-            );
-
-            if (shouldSendImages) {
-              console.log("✅ Groq decidió que SÍ debe enviar imágenes");
-              imagesToSend = await this.filterMediaWithGroq(
-                images,
-                concatenatedUserText,
-                cleanedResponse,
-                "imágenes",
-                3
-              );
-            } else {
-              console.log("⛔ Groq decidió NO enviar imágenes");
-              imagesToSend = [];
-            }
-          }
-
-          // VIDEOS: Decidir y filtrar
-          if (videos.length > 0) {
-            const shouldSendVideos = await this.shouldSendMultimedia(
-              concatenatedUserText,
-              cleanedResponse,
-              "videos"
-            );
-
-            if (shouldSendVideos) {
-              console.log("✅ Groq decidió que SÍ debe enviar videos");
-              videosToSend = await this.filterMediaWithGroq(
-                videos,
-                concatenatedUserText,
-                cleanedResponse,
-                "videos",
-                3
-              );
-            } else {
-              console.log("⛔ Groq decidió NO enviar videos");
-              videosToSend = [];
-            }
-          }
-
-          // AUDIOS: Decidir y filtrar
-          if (audios.length > 0) {
-            const shouldSendAudios = await this.shouldSendMultimedia(
-              concatenatedUserText,
-              cleanedResponse,
-              "audios"
-            );
-
-            if (shouldSendAudios) {
-              console.log("✅ Groq decidió que SÍ debe enviar audios");
-              audiosToSend = await this.filterMediaWithGroq(
-                audios,
-                concatenatedUserText,
-                cleanedResponse,
-                "audios",
-                3
-              );
-            } else {
-              console.log("⛔ Groq decidió NO enviar audios");
-              audiosToSend = [];
-            }
-          }
-        }
-
-        // Log de depuración
-        // if (locationToSend.length > 0) {
-        //   const shouldSendLocation = await this.shouldSendMultimedia(
-        //     concatenatedUserText,
-        //     cleanedResponse,
-        //     "ubicación"
-        //   );
-
-        //   if (shouldSendLocation) {
-        //     console.log("✅ Groq decidió que SÍ debe enviar ubicación");
-        //     // No usar filterMediaWithGroq para ubicación, ya que no es multimedia
-        //   } else {
-        //     console.log("⛔ Groq decidió NO enviar ubicación");
-        //     locationToSend = null;
-        //   }
-        // }
-        // if (locationToSend) {
-        //   console.log("📍 Location a enviar:", {
-        //     name: locationToSend.name,
-        //     latitude: locationToSend.latitude,
-        //     longitude: locationToSend.longitude,
-        //     address: locationToSend.address,
-        //   });
-        // }
-
-        return {
-          response: responseMessage,
-          locationToSend,
-          imagesToSend,
-          audiosToSend,
-          videosToSend,
-          shouldListLocations,
-        };
-      } catch (error) {
-        console.error("Error en chat:", error);
-        return {
-          error: "Error procesando el chat",
-        };
-      }
-    } catch (error) {
-      console.error("❌ Error al obtener el historial de chat:", error);
-      throw new Error("Error al obtener el historial de chat");
-    }
-  }
-
-  static async getStatusAssistant({ name = "assistant-1" }) {
-    try {
-      const statusRef = db.collection("config").doc(name);
-      const statusDoc = await statusRef.get();
-
-      if (!statusDoc.exists) {
-        console.error(`❌ Asistente ${name} no encontrado`);
-        return { error: `Asistente ${name} no encontrado` };
-      }
-
-      const statusData = statusDoc.data();
-
-      return {
-        name,
-        status: statusData,
-      };
-    } catch (error) {
-      console.error("❌ Error al obtener el estado del asistente:", error);
-      throw new Error("Error al obtener el estado del asistente");
-    }
-  }
-
-  static async getConfigAssistant({ name = "assistant-1" }) {
-    try {
-      const configRef = db.collection("config").doc(name);
-      const configDoc = await configRef.get();
-
-      if (!configDoc.exists) {
-        console.error(`❌ Configuración del asistente no encontrada`);
-        return { error: `Configuración del asistente no encontrada` };
-      }
-
-      const configData = configDoc.data();
-
-      return {
-        config: configData,
-      };
-    } catch (error) {
-      console.error(
-        "❌ Error al obtener la configuración del asistente:",
-        error
-      );
-      throw new Error("Error al obtener la configuración del asistente");
-    }
-  }
+¿El usuario pide explícitamente ver ${mediaType}? 
+Responde solo "si" o "no".`;
+	try {
+		const res = await groqClient.chat.completions.create({
+			model: MODEL_CHAT,
+			messages: [{ role: "user", content: prompt }],
+			max_tokens: 5,
+			temperature: 0.0,
+		});
+		const out = TextSim.normalize(res.choices?.[0]?.message?.content || "");
+		const ok = /^(si|sí)$/.test(out);
+		log(`shouldSendMultimedia(${mediaType})=`, ok, " raw:", out);
+		return ok;
+	} catch (e) {
+		warn("shouldSendMultimedia error:", e?.message || e);
+		return false;
+	}
 }
 
-module.exports = {
-  AssistantService,
-};
+/* ------------------------------
+      Servicio principal
+------------------------------ */
+class AssistantService {
+	/* ---------- FIREBASE (respaldo directo si lo necesitas en otros lugares) ---------- */
+	static async getActiveLocations() {
+		return fbGetActiveLocations();
+	}
+
+	static async getActivePromptImages() {
+		return fbGetActivePromptImages();
+	}
+
+	/* ---------- TEXT SIMILARITY helpers re-export ---------- */
+	static normalize = TextSim.normalize.bind(TextSim);
+	static tokenize = TextSim.tokenize.bind(TextSim);
+	static jaccard = TextSim.jaccard.bind(TextSim);
+
+	/* ---------- Resolver sucursal combinando Qdrant + fallback ---------- */
+	static async resolveBranch(userRaw, branchHint = null) {
+		log("resolveBranch input:", { userRaw, branchHint });
+
+		// 1) Intento con Qdrant (más robusto)
+		const candidate =
+			(await qdrantResolveBranchByQuery(branchHint || userRaw)) || null;
+
+		if (candidate) {
+			log("resolveBranch via Qdrant:", candidate);
+			return candidate;
+		}
+
+		// 2) Fallback a Firebase si Qdrant no respondió
+		const activeLocations = await fbGetActiveLocations();
+		if (!activeLocations?.length) {
+			warn("resolveBranch: no hay locations activas en Firebase");
+			return null;
+		}
+
+		// Busca por similitud de texto
+		const scored = activeLocations
+			.map((loc) => {
+				const txt = `${loc.name} ${loc.city || ""} ${loc.address || ""} ${(
+					loc.aliases || []
+				).join(" ")}`;
+				return { loc, score: TextSim.jaccard(branchHint || userRaw, txt) };
+			})
+			.sort((a, b) => b.score - a.score);
+
+		const top = scored[0];
+		log("resolveBranch fallback topScore:", top?.score);
+
+		if (!top || top.score < 0.25) return null;
+
+		const out = {
+			name: top.loc.name,
+			address: top.loc.address || "",
+			description: top.loc.description || "",
+			city: top.loc.city || "",
+			latitude: top.loc.latitude || null,
+			longitude: top.loc.longitude || null,
+			active: top.loc.active !== false,
+		};
+		log("resolveBranch via Firebase:", out);
+		return out;
+	}
+
+	/* ---------- Chat principal (RAG + gating) ---------- */
+	static async chatWithDocument({ chat }) {
+		if (!chat?.length) return { error: "Chat vacío" };
+		try {
+			const messages = chat;
+			const concatenated = getUnrespondedUserMessages(messages);
+			if (!concatenated) return { error: "No hay mensaje de usuario" };
+
+			log("chatWithDocument userText:", concatenated);
+
+			// Embedding del input del usuario
+			const { embedding } =
+				await EmbeddingsService.getEmbeddingOrCachedResponse({
+					text: concatenated,
+				});
+
+			// Contexto extra desde Qdrant (documentos)
+			const contextDocs = await qdrantSearchDocuments(embedding, 8);
+			log("contextDocs count:", contextDocs.length);
+
+			// Opcional: lista de sucursales para dar contexto al LLM (preferir Qdrant)
+			let branchesForContext = await qdrantListAllBranches();
+			if (!branchesForContext) {
+				const fbBranches = await fbGetActiveLocations();
+				branchesForContext = fbBranches.map((l) => ({
+					name: l.name,
+					city: l.city || "",
+					address: l.address || "",
+					description: l.description || "",
+					latitude: l.latitude || null,
+					longitude: l.longitude || null,
+					active: l.active !== false,
+				}));
+				log("branchesForContext via Firebase:", branchesForContext.length);
+			} else {
+				log("branchesForContext via Qdrant:", branchesForContext.length);
+			}
+
+			const contextText =
+				(contextDocs || []).map((d) => d.data.text).join("\n\n") +
+				(branchesForContext?.length
+					? "\n\nUBICACIONES DISPONIBLES:\n" +
+					  branchesForContext
+							.map(
+								(l) =>
+									`${l.city ? `[${l.city}] ` : ""}${l.name}${
+										l.address ? ` - ${l.address}` : ""
+									}`
+							)
+							.join("\n")
+					: "");
+
+			// Normalizar mensajes y añadir contexto al primero
+			const normalizedMessages = messages.map((m) => ({
+				role: m.role,
+				content: extractTextFromMessage(m),
+			}));
+
+			const groqMessages = normalizedMessages.length
+				? [
+						{
+							role: normalizedMessages[0].role,
+							content:
+								normalizedMessages[0].content + "\n\nCONTEXTO:\n" + contextText,
+						},
+						...normalizedMessages.slice(1),
+				  ]
+				: [];
+
+			const llmResponse = await groqClient.chat.completions.create({
+				model: MODEL_CHAT,
+				messages: groqMessages,
+				max_tokens: 300,
+				temperature: 0.8,
+			});
+
+			const cleanedResponse = formatForWhatsApp(
+				llmResponse.choices?.[0]?.message?.content || ""
+			);
+			log("LLM cleanedResponse (excerpt):", cleanedResponse.slice(0, 120));
+
+			/* --- POST-PROCESO: INTENCIÓN + ACCIONES --- */
+			const userRaw = concatenated;
+			const { intent, branch_mentioned, explicit } = await decideUserIntent(
+				userRaw,
+				cleanedResponse
+			);
+			log("Intent detection:", { intent, branch_mentioned, explicit });
+
+			// Resolver sucursal (Qdrant -> Firebase)
+			const resolvedBranch = await this.resolveBranch(
+				userRaw,
+				branch_mentioned
+			);
+			log("Resolved branch:", resolvedBranch);
+
+			// Preparar resultados
+			let locationToSend = null;
+			let imagesToSend = [];
+			let videosToSend = [];
+			let audiosToSend = [];
+			let shouldListLocations = false;
+
+			switch (intent) {
+				case "list_branches": {
+					shouldListLocations = true;
+					break;
+				}
+				case "request_location": {
+					if (explicit && resolvedBranch) {
+						const ok = await shouldSendMultimedia(
+							userRaw,
+							cleanedResponse,
+							"ubicación"
+						);
+						if (ok) locationToSend = resolvedBranch;
+						log("request_location ->", { ok, locationToSend });
+					} else {
+						shouldListLocations = true;
+						log(
+							"request_location -> listing because not explicit or no resolvedBranch"
+						);
+					}
+					break;
+				}
+				case "request_images":
+				case "request_videos":
+				case "request_audios": {
+					if (!(explicit && resolvedBranch)) {
+						shouldListLocations = true;
+						log(
+							"media request -> listing because not explicit or no resolvedBranch"
+						);
+						break;
+					}
+					const mediaType =
+						intent === "request_images"
+							? "image"
+							: intent === "request_videos"
+							? "video"
+							: "audio";
+
+					// Buscar multimedia SOLO de la sucursal + ciudad del resolvedBranch (Qdrant)
+					const media = await qdrantSearchMedia({
+						userQuery: userRaw,
+						branchName: resolvedBranch.name,
+						city: resolvedBranch.city,
+						type: mediaType,
+						limit: 3,
+					});
+
+					log(`Media results (${mediaType}):`, media.length);
+
+					if (mediaType === "image") imagesToSend = media;
+					if (mediaType === "video") videosToSend = media;
+					if (mediaType === "audio") audiosToSend = media;
+
+					// Si Qdrant no devolvió nada, dar opción de listar
+					if (
+						(mediaType === "image" && !imagesToSend.length) ||
+						(mediaType === "video" && !videosToSend.length) ||
+						(mediaType === "audio" && !audiosToSend.length)
+					) {
+						shouldListLocations = true;
+						log("No media found -> shouldListLocations = true");
+					}
+					break;
+				}
+				default:
+					log("No actionable intent. Returning only LLM text.");
+					break;
+			}
+
+			return {
+				response: {
+					role: "assistant",
+					content: [{ type: "text", text: cleanedResponse }],
+				},
+				locationToSend,
+				imagesToSend,
+				audiosToSend,
+				videosToSend,
+				shouldListLocations,
+			};
+		} catch (err) {
+			errLog("Error en chatWithDocument:", err?.data || err?.message || err);
+			return { error: "Error procesando el chat" };
+		}
+	}
+
+	/* ---------- CONFIG ---------- */
+	static async getStatusAssistant({ name = "assistant-1" } = {}) {
+		try {
+			const doc = await db.collection("config").doc(name).get();
+			return doc.exists
+				? { name, status: doc.data() }
+				: { error: `Asistente ${name} no encontrado` };
+		} catch (err) {
+			errLog("getStatusAssistant error:", err?.message || err);
+			return { error: "No se pudo leer el estado del asistente" };
+		}
+	}
+
+	static async getConfigAssistant({ name = "assistant-1" } = {}) {
+		try {
+			const doc = await db.collection("config").doc(name).get();
+			return doc.exists
+				? { config: doc.data() }
+				: { error: "Configuración no encontrada" };
+		} catch (err) {
+			errLog("getConfigAssistant error:", err?.message || err);
+			return { error: "No se pudo leer la configuración del asistente" };
+		}
+	}
+}
+
+module.exports = { AssistantService };
