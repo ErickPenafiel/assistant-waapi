@@ -396,7 +396,6 @@ class MessageProcessorService {
     else {
       if (context.shouldRespondWithAudio) {
         try {
-          const { wasender } = require("../config/clients/wasenderapi-client");
           const audioBuffer = await AudioService.generateResponseAudio(
             responseText
           );
@@ -404,12 +403,11 @@ class MessageProcessorService {
             audioBuffer,
             "ogg"
           );
-          const fs = require("fs");
 
-          await wasender.sendMedia({
-            to: `+${formattedPhone}`,
-            media: fs.createReadStream(tempAudioPath),
-            mediaType: "audio",
+          await MessageWasendService.sendAudioFile({
+            phone: formattedPhone,
+            filePath: tempAudioPath,
+            mimeType: "audio/ogg",
           });
 
           setTimeout(async () => {

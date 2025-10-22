@@ -1,11 +1,72 @@
-const { text } = require("express");
 const { wasender } = require("../config/clients/wasenderapi-client");
+const fs = require("fs/promises");
+const path = require("path");
+
+const formatPhone = (phone) => {
+  if (!phone) throw new Error("Phone number is required");
+  const normalized = String(phone).trim();
+  if (normalized.startsWith("+")) {
+    return normalized;
+  }
+  return `+${normalized.replace(/^\+/, "")}`;
+};
+
+const MIME_BY_EXTENSION = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  avi: "video/x-msvideo",
+  mkv: "video/x-matroska",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  oga: "audio/ogg",
+  ogg: "audio/ogg",
+  m4a: "audio/mp4",
+  pdf: "application/pdf",
+};
+
+const extractExtension = (value) => {
+  if (!value) return null;
+  const match = /\.([A-Za-z0-9]+)(?:$|\?)/.exec(value);
+  return match ? match[1].toLowerCase() : null;
+};
+
+const resolveMimeType = (source, fallback) => {
+  if (!source || typeof source !== "string") {
+    return fallback;
+  }
+
+  if (source.startsWith("data:")) {
+    const match = /^data:([^;]+);/.exec(source);
+    return match ? match[1] : fallback;
+  }
+
+  try {
+    const url = new URL(source);
+    const ext = extractExtension(url.pathname);
+    if (ext && MIME_BY_EXTENSION[ext]) {
+      return MIME_BY_EXTENSION[ext];
+    }
+  } catch (_) {
+    const ext = extractExtension(source);
+    if (ext && MIME_BY_EXTENSION[ext]) {
+      return MIME_BY_EXTENSION[ext];
+    }
+  }
+
+  return fallback;
+};
 
 class MessageWasendService {
   static async sendMessage({ phone, message }) {
     try {
       const response = await wasender.sendText({
-        to: `+${phone}`,
+        to: formatPhone(phone),
         text: message,
       });
       return response;
@@ -23,25 +84,21 @@ class MessageWasendService {
       }
 
       const locationPayload = {
-        to: `+${phone}`,
-        text: location.name || "Ubicación compartida",
         latitude: Number(location.latitude),
         longitude: Number(location.longitude),
-        name: String(location.name || "Ubicación"),
-        address: String(location.address || ""),
       };
 
-      console.log("📍 Enviando ubicación:", locationPayload);
+      if (location.name) {
+        locationPayload.name = String(location.name);
+      }
+
+      if (location.address) {
+        locationPayload.address = String(location.address);
+      }
 
       const response = await wasender.sendLocation({
-        to: `+${phone}`,
-        location: {
-          latitude: Number(location.latitude),
-          longitude: Number(location.longitude),
-          name: String(location.name || "Ubicación"),
-          address: String(location.address || ""),
-        },
-        text: location.name || "Ubicación compartida",
+        to: formatPhone(phone),
+        location: locationPayload,
       });
       console.log(`✅ Ubicación enviada a ${phone}:`, location.name);
       return response;
@@ -54,61 +111,78 @@ class MessageWasendService {
 
   static async sendImage({ phone, imageUrl, caption }) {
     try {
-      const imagePayload = {
-        to: `+${phone}`,
-        text: caption || "Imagen compartida", // ✅ Asegurar que siempre haya texto
+      const response = await wasender.sendImage({
+        to: formatPhone(phone),
         imageUrl: imageUrl,
-      };
+        mimeType: resolveMimeType(imageUrl, "image/jpeg"),
+        text: caption || "Imagen compartida",
+      });
 
-      console.log("🖼️ Enviando imagen:", { url: imageUrl, caption });
-
-      const response = await wasender.sendImage(imagePayload);
       console.log(`✅ Imagen enviada a ${phone}`);
       return response;
     } catch (error) {
       console.error("❌ Error sending image:", error);
+      console.error("Image data:", { phone, imageUrl });
       throw error;
     }
   }
 
   static async sendAudio({ phone, audioUrl, caption }) {
     try {
-      const audioPayload = {
-        to: `+${phone}`,
+      const response = await wasender.sendAudio({
+        to: formatPhone(phone),
         audioUrl: audioUrl,
-        text: caption, // Caption es opcional
-      };
+        mimeType: resolveMimeType(audioUrl, "audio/ogg"),
+        text: caption,
+      });
 
-      console.log("🎵 Enviando audio:", audioPayload);
-
-      const response = await wasender.sendAudio(audioPayload);
       console.log(`✅ Audio enviado a ${phone}`);
       return response;
     } catch (error) {
       console.error("❌ Error sending audio:", error);
-      console.error("Audio payload:", audioPayload);
-      console.error("Error details:", error);
+      console.error("Audio data:", { phone, audioUrl, caption });
       throw error;
     }
   }
 
   static async sendVideo({ phone, videoUrl, caption }) {
     try {
-      const videoPayload = {
-        to: `+${phone}`,
+      const response = await wasender.sendVideo({
+        to: formatPhone(phone),
         videoUrl: videoUrl,
-        text: caption, // Caption es opcional
-      };
+        mimeType: resolveMimeType(videoUrl, "video/mp4"),
+        text: caption,
+      });
 
-      console.log("🎬 Enviando video:", videoPayload);
-
-      const response = await wasender.sendVideo(videoPayload);
       console.log(`✅ Video enviado a ${phone}`);
       return response;
     } catch (error) {
       console.error("❌ Error sending video:", error);
-      console.error("Video payload:", videoPayload);
-      console.error("Error details:", error);
+      console.error("Video data:", { phone, videoUrl, caption });
+      throw error;
+    }
+  }
+
+  static async sendAudioFile({ phone, filePath, mimeType = "audio/ogg" }) {
+    try {
+      if (!filePath) {
+        throw new Error("El archivo de audio es requerido");
+      }
+
+      const fileBuffer = await fs.readFile(filePath);
+      const fileName = path.basename(filePath) || "audio.ogg";
+
+      const response = await wasender.sendAudio({
+        to: formatPhone(phone),
+        base64Data: fileBuffer.toString("base64"),
+        mimeType,
+        fileName,
+      });
+
+      console.log(`✅ Audio generado enviado a ${phone}`);
+      return response;
+    } catch (error) {
+      console.error("❌ Error sending generated audio:", error);
       throw error;
     }
   }

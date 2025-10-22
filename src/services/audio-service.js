@@ -2,12 +2,11 @@ require("dotenv").config({ path: process.env.ENV_PATH || ".env" });
 const fs = require("fs").promises;
 const path = require("path");
 const crypto = require("crypto");
-const { wasender } = require("../config/clients/wasenderapi-client");
 
 class AudioService {
   static async processIncomingAudio({ audioMessage, messageId }) {
     try {
-      const audioBuffer = await this.downloadAudioWithWasender(audioMessage);
+      const audioBuffer = await this.downloadIncomingAudio(audioMessage);
 
       if (!audioBuffer) {
         throw new Error("No se pudo descargar el audio");
@@ -27,61 +26,64 @@ class AudioService {
     }
   }
 
-  static async downloadAudioWithWasender(audioMessage) {
+  static parseDataUri(mediaUrl) {
+    if (!mediaUrl || typeof mediaUrl !== "string") {
+      return null;
+    }
+
+    const match = mediaUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      mimeType: match[1],
+      base64: match[2],
+    };
+  }
+
+  static async downloadIncomingAudio(audioMessage) {
+    if (!audioMessage) {
+      throw new Error("Audio message payload vacío");
+    }
+
     try {
-      const mediaData = {
-        data: {
-          messages: {
-            key: {
-              id: audioMessage.key?.id || crypto.randomUUID(),
-            },
-            message: {
-              audioMessage: {
-                url: audioMessage.url,
-                mimetype: audioMessage.mimetype || "audio/ogg; codecs=opus",
-                mediaKey: audioMessage.mediaKey,
-                fileSha256: audioMessage.fileSha256,
-                fileLength: audioMessage.fileLength,
-                fileName: audioMessage.fileName || "audio.ogg",
-              },
-            },
-          },
-        },
-      };
+      if (audioMessage.base64Data) {
+        return Buffer.from(audioMessage.base64Data, "base64");
+      }
 
-      const response = await fetch(
-        "https://www.wasenderapi.com/api/decrypt-media",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.WASENDER_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(mediaData),
+      const dataUri =
+        this.parseDataUri(audioMessage.mediaUrl) ||
+        this.parseDataUri(audioMessage.url);
+
+      if (dataUri) {
+        if (!audioMessage.mimetype) {
+          audioMessage.mimetype = dataUri.mimeType;
         }
-      );
-
-      if (!response.ok) {
-        throw new Error(`Error decrypting media: ${response.statusText}`);
+        return Buffer.from(dataUri.base64, "base64");
       }
 
-      const result = await response.json();
-      const publicUrl = result.publicUrl;
-
-      if (!publicUrl) {
-        throw new Error("No se recibió URL pública del archivo descifrado");
+      if (audioMessage.url) {
+        const response = await fetch(audioMessage.url);
+        if (!response.ok) {
+          throw new Error(
+            `Error descargando audio: ${response.status} ${response.statusText}`
+          );
+        }
+        return await response.arrayBuffer();
       }
 
-      const audioResponse = await fetch(publicUrl);
-      if (!audioResponse.ok) {
-        throw new Error(
-          `Error downloading decrypted audio: ${audioResponse.statusText}`
-        );
+      if (audioMessage.buffer instanceof Uint8Array) {
+        return Buffer.from(audioMessage.buffer);
       }
 
-      return await audioResponse.arrayBuffer();
+      if (audioMessage.tempFilePath) {
+        return fs.readFile(audioMessage.tempFilePath);
+      }
+
+      throw new Error("No se encontró contenido de audio en el webhook");
     } catch (error) {
-      console.error("Error descargando audio con WASender:", error);
+      console.error("Error obteniendo audio entrante:", error);
       throw error;
     }
   }
